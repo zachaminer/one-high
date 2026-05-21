@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>One-High</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/css/style.css" />
+</head>
+<body>
+
+<!-- ═══════════════════════ LOBBY ═══════════════════════ -->
+<div id="lobby-screen" class="screen active">
+  <div class="lobby-wrap">
+    <div class="lobby-header">
+      <h1 class="game-title">ONE<br/><span>HIGH</span></h1>
+      <p class="subtitle">A family trick-taking game · 4 players · 2 teams</p>
+    </div>
+    <div class="join-form">
+      <input id="name-input" type="text" placeholder="Your name" maxlength="20" autocomplete="off" />
+      <button id="join-btn" class="btn-primary">Join Game</button>
+    </div>
+    <div class="seats-panel">
+      <h3>Waiting for players…</h3>
+      <div class="seats">
+        <div class="seat-row">
+          <div class="seat team-a" id="seat-0"><span class="seat-label">Seat 1</span><span class="seat-name">—</span></div>
+          <div class="seat team-b" id="seat-1"><span class="seat-label">Seat 2</span><span class="seat-name">—</span></div>
+        </div>
+        <div class="seat-row">
+          <div class="seat team-a" id="seat-2"><span class="seat-label">Seat 3</span><span class="seat-name">—</span></div>
+          <div class="seat team-b" id="seat-3"><span class="seat-label">Seat 4</span><span class="seat-name">—</span></div>
+        </div>
+      </div>
+      <p class="team-note">Seats 1 &amp; 3 = Team A &nbsp;·&nbsp; Seats 2 &amp; 4 = Team B</p>
+    </div>
+  </div>
+</div>
+
+<!-- ═══════════════════════ GAME ═══════════════════════ -->
+<div id="game-screen" class="screen">
+
+  <!-- Score bar -->
+  <header class="scorebar">
+    <div class="score-team team-a-score">
+      <span class="score-label">TEAM A</span>
+      <span class="score-val" id="score-a">0</span>
+    </div>
+    <div class="game-info-center">
+      <span id="phase-label">—</span>
+      <span id="bid-label" class="bid-display"></span>
+    </div>
+    <div class="score-team team-b-score">
+      <span class="score-val" id="score-b">0</span>
+      <span class="score-label">TEAM B</span>
+    </div>
+  </header>
+
+  <!-- Table -->
+  <main class="table-area">
+
+    <!-- Opponent (across) -->
+    <div class="player-zone across-zone">
+      <div class="player-info" id="across-info">
+        <span class="player-name" id="across-name">—</span>
+        <span class="player-tag" id="across-tag"></span>
+      </div>
+      <div class="opponent-hand" id="across-hand"></div>
+    </div>
+
+    <!-- Left opponent -->
+    <div class="player-zone left-zone">
+      <div class="player-info" id="left-info">
+        <span class="player-name" id="left-name">—</span>
+        <span class="player-tag" id="left-tag"></span>
+      </div>
+      <div class="opponent-hand vertical" id="left-hand"></div>
+    </div>
+
+    <!-- Center play area -->
+    <div class="center-area">
+      <div class="trump-indicator" id="trump-indicator"></div>
+      <div class="trick-area" id="trick-area">
+        <div class="trick-slot" id="trick-across"></div>
+        <div class="trick-row">
+          <div class="trick-slot" id="trick-left"></div>
+          <div class="trick-slot" id="trick-self"></div>
+        </div>
+        <div class="trick-slot" id="trick-right"></div>
+      </div>
+      <div class="trick-count-bar">
+        <span id="trick-count-a" class="trick-count">A: 0</span>
+        <span id="trick-count-b" class="trick-count">B: 0</span>
+      </div>
+    </div>
+
+    <!-- Right opponent -->
+    <div class="player-zone right-zone">
+      <div class="player-info" id="right-info">
+        <span class="player-name" id="right-name">—</span>
+        <span class="player-tag" id="right-tag"></span>
+      </div>
+      <div class="opponent-hand vertical" id="right-hand"></div>
+    </div>
+
+    <!-- Self -->
+    <div class="player-zone self-zone">
+      <div class="player-info self-info">
+        <span class="player-name" id="self-name">You</span>
+        <span class="player-tag" id="self-tag"></span>
+      </div>
+      <div class="hand" id="my-hand"></div>
+    </div>
+
+  </main>
+
+  <!-- Action panel -->
+  <div class="action-panel" id="action-panel">
+    <!-- Bidding controls -->
+    <div class="action-section" id="bid-controls" style="display:none">
+      <div class="bid-row">
+        <button class="btn-sm" id="bid-minus">−5</button>
+        <span class="bid-amount" id="bid-amount">75</span>
+        <button class="btn-sm" id="bid-plus">+5</button>
+      </div>
+      <div class="bid-row">
+        <button class="btn-primary" id="bid-submit">Bid</button>
+        <button class="btn-ghost" id="bid-pass">Pass</button>
+        <button class="btn-ghost" id="redeal-btn">Redeal?</button>
+      </div>
+    </div>
+
+    <!-- Kitty / trump controls -->
+    <div class="action-section" id="kitty-controls" style="display:none">
+      <p class="kitty-instruction">Select a card to discard, then choose Trump:</p>
+      <div class="trump-row" id="trump-buttons">
+        <button class="trump-btn suit-red" data-suit="Red">Red</button>
+        <button class="trump-btn suit-black" data-suit="Black">Black</button>
+        <button class="trump-btn suit-yellow" data-suit="Yellow">Yellow</button>
+        <button class="trump-btn suit-green" data-suit="Green">Green</button>
+        <button class="trump-btn no-trump" data-suit="NoTrump">No Trump</button>
+      </div>
+    </div>
+
+    <!-- Status message -->
+    <div class="action-section" id="status-msg">
+      <p id="status-text">Waiting…</p>
+    </div>
+  </div>
+
+</div>
+
+<!-- ═══════════════════════ OVERLAY ═══════════════════════ -->
+<div id="overlay" class="overlay hidden">
+  <div class="overlay-card">
+    <h2 id="overlay-title"></h2>
+    <div id="overlay-body"></div>
+    <button class="btn-primary" id="overlay-btn" style="display:none"></button>
+  </div>
+</div>
+
+<!-- Toast -->
+<div id="toast" class="toast"></div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="/js/client.js"></script>
+</body>
+</html>
