@@ -176,6 +176,23 @@ io.on('connection', socket => {
     broadcastGameState(result);
   });
 
+  // ── Reset game (return everyone to empty lobby) ───────────────────────────
+
+  socket.on('resetGame', () => {
+    // Any player can trigger a reset at any time during a game
+    if (!seatBySocketId(socket.id)) return;
+
+    // Cancel all reconnect timers
+    for (const t of Object.values(disconnectTimers)) clearTimeout(t);
+    for (const k of Object.keys(disconnectTimers)) delete disconnectTimers[k];
+
+    // Clear seats and engine
+    seats.splice(0, seats.length);
+    engine.game = null;
+
+    io.emit('gameReset');
+  });
+
   // ── Next round ────────────────────────────────────────────────────────────
 
   socket.on('nextRound', () => {

@@ -56,6 +56,7 @@
       <span class="score-label" id="label-b">TEAM B</span>
     </div>
   </header>
+  <button class="btn-reset" id="reset-btn" title="End game &amp; return to lobby">✕ End</button>
 
   <!-- Table: opponents + center + your hand -->
   <main class="table-area">
@@ -180,7 +181,10 @@
   <div class="overlay-card">
     <h2 id="overlay-title"></h2>
     <div id="overlay-body"></div>
-    <button class="btn-primary" id="overlay-btn" style="display:none"></button>
+    <div class="overlay-btns">
+      <button class="btn-primary" id="overlay-btn" style="display:none"></button>
+      <button class="btn-ghost" id="overlay-cancel" style="display:none">Cancel</button>
+    </div>
   </div>
 </div>
 

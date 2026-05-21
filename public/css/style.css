@@ -202,6 +202,30 @@ button, .card.playable {
   overflow: hidden;
 }
 
+/* Reset button — sits below the scorebar, flush right */
+.btn-reset {
+  display: block;
+  align-self: flex-end;
+  margin: 2px clamp(0.4rem, 2vw, 0.75rem) 0 auto;
+  flex-shrink: 0;
+  background: transparent;
+  border: 1px solid rgba(245,238,216,0.18);
+  border-radius: 4px;
+  color: rgba(245,238,216,0.3);
+  font-family: 'DM Mono', monospace;
+  font-size: 0.6rem;
+  letter-spacing: 0.05em;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s, background 0.15s;
+  line-height: 1.4;
+}
+.btn-reset:hover {
+  color: #e06f6f;
+  border-color: rgba(224,111,111,0.6);
+  background: rgba(224,111,111,0.08);
+}
+
 /* Score bar */
 .scorebar {
   height: var(--scorebar-h);
@@ -670,6 +694,13 @@ button, .card.playable {
   flex-direction: column;
   gap: 1rem;
   box-shadow: 0 20px 60px rgba(0,0,0,0.7);
+}
+
+.overlay-btns {
+  display: flex;
+  gap: 0.6rem;
+  justify-content: center;
+  flex-wrap: wrap;
 }
 
 #overlay-title {

@@ -57,27 +57,53 @@ function cardRank(card) {
 }
 
 function sortHand(hand) {
-  // Count cards per suit so we can order suits by size
+  const trumpSuit = gameState?.round?.trumpSuit; // null until declared
+
+  // Count cards per suit. The Rook, once trump is declared, is grouped with
+  // the trump suit for counting purposes (it belongs there logically).
   const suitCounts = {};
   for (const card of hand) {
-    suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
+    const bucket = (trumpSuit && trumpSuit !== 'NoTrump' && card.id === 'Rook')
+      ? trumpSuit  // Rook counts toward trump suit's total
+      : card.suit;
+    suitCounts[bucket] = (suitCounts[bucket] || 0) + 1;
   }
 
-  // Suit order: sort suit names by their card count, then alphabetically to break ties
-  const SUIT_ORDER = ['Red', 'Black', 'Yellow', 'Green', 'Rook'];
-  const suits = [...new Set(hand.map(c => c.suit))].sort((a, b) => {
+  // Build the ordered suit list.
+  // Rook is handled specially — it is never in this list as its own suit;
+  // before trump: it always sorts as the smallest suit (count = 0 forces it
+  // to one end regardless of other counts).
+  // After trump: it is absorbed into the trump suit group.
+  const nonRookSuits = [...new Set(hand.map(c => c.suit).filter(s => s !== 'Rook'))];
+
+  const SUIT_ORDER = ['Red', 'Black', 'Yellow', 'Green'];
+  nonRookSuits.sort((a, b) => {
     const diff = (suitCounts[a] || 0) - (suitCounts[b] || 0);
     if (diff !== 0) return sortSuitDir === 'asc' ? diff : -diff;
     return SUIT_ORDER.indexOf(a) - SUIT_ORDER.indexOf(b);
   });
 
-  const suitIndex = Object.fromEntries(suits.map((s, i) => [s, i]));
+  // Assign each card a [suitIndex, rankIndex] for the final sort.
+  function cardSuitIndex(card) {
+    if (card.id === 'Rook') {
+      if (trumpSuit && trumpSuit !== 'NoTrump') {
+        // Rook belongs inside the trump group — same index as trump suit
+        return nonRookSuits.indexOf(trumpSuit);
+      }
+      // No trump yet: Rook is always the "smallest suit" group.
+      // Place it before everything in asc, after everything in desc.
+      return sortSuitDir === 'asc' ? -1 : nonRookSuits.length;
+    }
+    return nonRookSuits.indexOf(card.suit);
+  }
 
   return [...hand].sort((a, b) => {
-    // Primary: suit group
-    const si = suitIndex[a.suit] - suitIndex[b.suit];
+    const si = cardSuitIndex(a) - cardSuitIndex(b);
     if (si !== 0) return si;
-    // Secondary: rank within suit
+    // Within the same suit group: Rook is always the lowest card
+    if (a.id === 'Rook') return sortNumDir === 'asc' ? -1 : 1;
+    if (b.id === 'Rook') return sortNumDir === 'asc' ? 1 : -1;
+    // Normal rank comparison
     const ri = cardRank(a) - cardRank(b);
     return sortNumDir === 'asc' ? ri : -ri;
   });
@@ -612,18 +638,55 @@ function handleGameOver(state) {
   const teamLabel = winner === 0 ? 'Team A' : 'Team B';
   const s = state.scores;
   showOverlay(
-    `🏆 ${teamLabel} Wins!`,
-    `<p style="font-family:'DM Mono',monospace">Final scores:<br/>Team A: ${s[0]} &nbsp;·&nbsp; Team B: ${s[1]}</p><p style="margin-top:1rem;opacity:.7;font-size:.85rem">Refresh the page to play again.</p>`,
-    null, null
+    `${teamLabel} Wins!`,
+    `<p style="font-family:'DM Mono',monospace">Final scores:<br/>Team A: ${s[0]} &nbsp;·&nbsp; Team B: ${s[1]}</p>`,
+    'Play Again',
+    () => socket.emit('resetGame')
   );
 }
 
+document.getElementById('reset-btn').addEventListener('click', () => {
+  showOverlay(
+    'End Game?',
+    '<p style="font-family:\'DM Mono\',monospace;opacity:.8">This will end the current game and send everyone back to the lobby.</p>',
+    'Yes, End Game',
+    () => socket.emit('resetGame'),
+    { cancellable: true }
+  );
+});
+
+socket.on('gameReset', () => {
+  localStorage.removeItem('oneHighToken');
+  // Reset all client state
+  myName = '';
+  mySeat = null;
+  gameState = null;
+  selectedCard = null;
+  currentBid = 75;
+  highBid = 0;
+  // Return to a clean lobby
+  gameScreen.classList.remove('active');
+  lobbyScreen.classList.add('active');
+  nameInput.value = '';
+  nameInput.disabled = false;
+  nameInput.placeholder = 'Your name';
+  joinBtn.disabled = false;
+  // Clear seat display
+  for (let i = 0; i < 4; i++) {
+    const el = document.getElementById(`seat-${i}`);
+    el.querySelector('.seat-name').textContent = '—';
+    el.classList.remove('filled', 'disconnected');
+  }
+  hideOverlay();
+});
+
 // ─── Overlay ──────────────────────────────────────────────────────────────────
 
-function showOverlay(title, bodyHtml, btnText, onBtn) {
+function showOverlay(title, bodyHtml, btnText, onBtn, { cancellable = false } = {}) {
   document.getElementById('overlay-title').textContent = title;
   document.getElementById('overlay-body').innerHTML = bodyHtml;
   const btn = document.getElementById('overlay-btn');
+  const cancelBtn = document.getElementById('overlay-cancel');
   if (btnText) {
     btn.style.display = '';
     btn.textContent = btnText;
@@ -631,6 +694,8 @@ function showOverlay(title, bodyHtml, btnText, onBtn) {
   } else {
     btn.style.display = 'none';
   }
+  cancelBtn.style.display = cancellable ? '' : 'none';
+  cancelBtn.onclick = hideOverlay;
   document.getElementById('overlay').classList.remove('hidden');
 }
 
