@@ -41,6 +41,55 @@ function cardLabel(card) {
   return `${card.number} ${card.suit}`;
 }
 
+// ─── Sort state & logic ───────────────────────────────────────────────────────
+
+// numDir: 'asc' = low→high (2s left, 14s/1s right), 'desc' = high→low
+// suitDir: 'asc' = fewest cards left, 'desc' = most cards left
+let sortNumDir  = 'asc';
+let sortSuitDir = 'asc';
+
+// Card rank within a suit: 2 is lowest, then 3..13, then 14, then 1 (highest)
+function cardRank(card) {
+  if (card.id === 'Rook') return 0; // Rook sorts to very bottom with 2s
+  if (card.number === 1)  return 15; // Ace is highest
+  if (card.number === 14) return 14;
+  return card.number; // 2–13 map directly
+}
+
+function sortHand(hand) {
+  // Count cards per suit so we can order suits by size
+  const suitCounts = {};
+  for (const card of hand) {
+    suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
+  }
+
+  // Suit order: sort suit names by their card count, then alphabetically to break ties
+  const SUIT_ORDER = ['Red', 'Black', 'Yellow', 'Green', 'Rook'];
+  const suits = [...new Set(hand.map(c => c.suit))].sort((a, b) => {
+    const diff = (suitCounts[a] || 0) - (suitCounts[b] || 0);
+    if (diff !== 0) return sortSuitDir === 'asc' ? diff : -diff;
+    return SUIT_ORDER.indexOf(a) - SUIT_ORDER.indexOf(b);
+  });
+
+  const suitIndex = Object.fromEntries(suits.map((s, i) => [s, i]));
+
+  return [...hand].sort((a, b) => {
+    // Primary: suit group
+    const si = suitIndex[a.suit] - suitIndex[b.suit];
+    if (si !== 0) return si;
+    // Secondary: rank within suit
+    const ri = cardRank(a) - cardRank(b);
+    return sortNumDir === 'asc' ? ri : -ri;
+  });
+}
+
+function applySortButtons() {
+  document.getElementById('sort-num-asc').classList.toggle('active', sortNumDir === 'asc');
+  document.getElementById('sort-num-desc').classList.toggle('active', sortNumDir === 'desc');
+  document.getElementById('sort-suit-asc').classList.toggle('active', sortSuitDir === 'asc');
+  document.getElementById('sort-suit-desc').classList.toggle('active', sortSuitDir === 'desc');
+}
+
 // ─── Card DOM builder ────────────────────────────────────────────────────────
 
 function buildCard(card, opts = {}) {
@@ -53,13 +102,11 @@ function buildCard(card, opts = {}) {
   el.dataset.cardId = card.id;
 
   if (card.id === 'Rook') {
-    el.innerHTML = `<div class="card-number" style="font-size:1.1rem">ROOK</div>`;
+    el.innerHTML = `<div class="card-number">ROOK</div>`;
   } else {
-    const icon = SUIT_ICONS[card.suit] || '?';
     el.innerHTML = `
       <div class="card-corner">${card.number}</div>
       <div class="card-number">${card.number}</div>
-      <div class="card-suit-icon">${icon}</div>
     `;
   }
   return el;
@@ -81,6 +128,30 @@ const nameInput   = document.getElementById('name-input');
 joinBtn.addEventListener('click', joinGame);
 nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') joinGame(); });
 
+// ─── Reconnection via stored token ───────────────────────────────────────────
+
+// On load, try to rejoin with a saved token before showing the join form
+const savedToken = localStorage.getItem('oneHighToken');
+if (savedToken) {
+  joinBtn.disabled = true;
+  nameInput.disabled = true;
+  nameInput.placeholder = 'Reconnecting…';
+  socket.emit('rejoinLobby', { token: savedToken });
+}
+
+socket.on('joinedAs', ({ token, seat }) => {
+  localStorage.setItem('oneHighToken', token);
+  mySeat = seat;
+});
+
+socket.on('rejoinFailed', () => {
+  // Token expired or invalid — clear it and let the user join fresh
+  localStorage.removeItem('oneHighToken');
+  joinBtn.disabled = false;
+  nameInput.disabled = false;
+  nameInput.placeholder = 'Your name';
+});
+
 function joinGame() {
   const name = nameInput.value.trim();
   if (!name) { toast('Enter your name first'); return; }
@@ -94,8 +165,13 @@ socket.on('lobbyUpdate', ({ players, full }) => {
     const p = players.find(p => p.seat === i);
     const el = document.getElementById(`seat-${i}`);
     const nameEl = el.querySelector('.seat-name');
-    nameEl.textContent = p ? p.name : '—';
+    if (p) {
+      nameEl.textContent = p.connected ? p.name : `${p.name} (away)`;
+    } else {
+      nameEl.textContent = '—';
+    }
     el.classList.toggle('filled', !!p);
+    el.classList.toggle('disconnected', !!(p && !p.connected));
   }
 });
 
@@ -103,7 +179,7 @@ socket.on('lobbyUpdate', ({ players, full }) => {
 
 function showGame() {
   lobbyScreen.classList.remove('active');
-  gameScreen.style.display = 'flex';
+  gameScreen.classList.add('active');
 }
 
 // ─── Game state handler ───────────────────────────────────────────────────────
@@ -113,12 +189,17 @@ socket.on('gameState', (state) => {
     mySeat = state.yourSeat;
   }
   gameState = state;
+  // Clear play-phase selection when a new state arrives (e.g. another player just went)
+  if (state.phase !== 'playing' || !isMyTurnToPlay(state)) selectedCard = null;
   showGame();
   render(state);
 });
 
 socket.on('playerLeft', ({ name, lobby }) => {
-  showOverlay('Player Left', `${name} disconnected. The game has been reset. Refresh to rejoin.`, null, null);
+  localStorage.removeItem('oneHighToken');
+  showOverlay('Game Reset', `${name} was away too long. The game has been reset.`, 'Back to Lobby', () => {
+    location.reload();
+  });
 });
 
 socket.on('error', (msg) => toast('⚠ ' + msg));
@@ -131,6 +212,7 @@ function render(state) {
   updateTrumpIndicator(state);
   updateTrickCounts(state);
   renderTrick(state);
+  renderKittyCard(state);
   renderOpponentHands(state);
   renderMyHand(state);
   renderActionPanel(state);
@@ -139,6 +221,18 @@ function render(state) {
 function updateScorebar(state) {
   document.getElementById('score-a').textContent = state.scores[0];
   document.getElementById('score-b').textContent = state.scores[1];
+
+  // Team labels: show "Name1 & Name2" when players are known
+  if (state.playerNames) {
+    const nameOf = seat => state.playerNames.find(p => p.seat === seat)?.name;
+    // Seats 0 & 2 = Team A, seats 1 & 3 = Team B
+    const a0 = nameOf(0), a2 = nameOf(2);
+    const b1 = nameOf(1), b3 = nameOf(3);
+    document.getElementById('label-a').textContent =
+      (a0 && a2) ? `${a0} & ${a2}` : (a0 || a2 || 'Team A');
+    document.getElementById('label-b').textContent =
+      (b1 && b3) ? `${b1} & ${b3}` : (b1 || b3 || 'Team B');
+  }
 
   const phases = { bidding: 'BIDDING', kitty: 'KITTY', playing: 'PLAYING', scoring: 'SCORING', gameover: 'GAME OVER' };
   document.getElementById('phase-label').textContent = phases[state.phase] || state.phase?.toUpperCase() || '';
@@ -177,8 +271,16 @@ function updatePlayerNames(state) {
 
     const nameEl = document.getElementById(`${zoneSuffix}-name`);
     const tagEl  = document.getElementById(`${zoneSuffix}-tag`);
-    if (nameEl) nameEl.textContent = zoneSuffix === 'self' ? `${name} (you)` : name;
-    if (tagEl)  tagEl.textContent = `Team ${teamLetter}`;
+    const connected = p ? p.connected !== false : false;
+    if (nameEl) {
+      if (zoneSuffix === 'self') {
+        nameEl.textContent = `${name} (you)`;
+      } else {
+        nameEl.textContent = connected ? name : `${name} ↻`;
+        nameEl.title = connected ? '' : 'Reconnecting…';
+      }
+    }
+    if (tagEl) tagEl.textContent = `Team ${teamLetter}`;
 
     // Active turn indicator
     const zone = document.querySelector(`.${zoneSuffix}-zone`);
@@ -247,6 +349,27 @@ function relativePosition(seat) {
   return ['self', 'left', 'across', 'right'][offset];
 }
 
+// ─── Kitty card display ───────────────────────────────────────────────────────
+
+function renderKittyCard(state) {
+  const el = document.getElementById('kitty-display');
+  if (state.phase !== 'kitty' || !state.round?.kitty) {
+    el.classList.add('hidden');
+    el.innerHTML = '';
+    return;
+  }
+
+  el.classList.remove('hidden');
+  el.innerHTML = '';
+
+  const label = document.createElement('div');
+  label.className = 'kitty-label';
+  label.textContent = 'Kitty';
+  el.appendChild(label);
+
+  el.appendChild(buildCard(state.round.kitty));
+}
+
 // ─── Opponent hands ───────────────────────────────────────────────────────────
 
 function renderOpponentHands(state) {
@@ -288,9 +411,11 @@ function renderMyHand(state) {
   const container = document.getElementById('my-hand');
   container.innerHTML = '';
 
-  const hand = state.yourHand || [];
+  const hand = sortHand(state.yourHand || []);
   const phase = state.phase;
   const r = state.round;
+
+  applySortButtons();
 
   hand.forEach(card => {
     const isKittyPhase = phase === 'kitty' && r?.bidWinner === mySeat;
@@ -314,7 +439,15 @@ function renderMyHand(state) {
 
     if (isPlayPhase) {
       el.addEventListener('click', () => {
-        socket.emit('playCard', { cardId: card.id });
+        if (selectedCard === card.id) {
+          // Second tap on the same card — play it
+          socket.emit('playCard', { cardId: card.id });
+          selectedCard = null;
+        } else {
+          // First tap — select (lift) this card, deselect any other
+          selectedCard = card.id;
+          renderMyHand(state);
+        }
       });
     }
 
@@ -376,12 +509,6 @@ function renderActionPanel(state) {
     if (r.bidWinner === mySeat) {
       kittyControls.style.display = 'flex';
       updateKittyConfirmButton();
-      // Show kitty card info
-      const kittyCard = r.kitty;
-      if (kittyCard) {
-        const instr = document.querySelector('.kitty-instruction');
-        instr.textContent = `Kitty: ${cardLabel(kittyCard)}. Select a non-pointer card to discard, then choose Trump:`;
-      }
     } else {
       statusMsg.style.display = 'flex';
       const winner = nameForSeat(r.bidWinner, state);
@@ -510,6 +637,25 @@ function showOverlay(title, bodyHtml, btnText, onBtn) {
 function hideOverlay() {
   document.getElementById('overlay').classList.add('hidden');
 }
+
+// ─── Sort controls ───────────────────────────────────────────────────────────
+
+document.getElementById('sort-num-asc').addEventListener('click', () => {
+  sortNumDir = 'asc';
+  if (gameState) renderMyHand(gameState);
+});
+document.getElementById('sort-num-desc').addEventListener('click', () => {
+  sortNumDir = 'desc';
+  if (gameState) renderMyHand(gameState);
+});
+document.getElementById('sort-suit-asc').addEventListener('click', () => {
+  sortSuitDir = 'asc';
+  if (gameState) renderMyHand(gameState);
+});
+document.getElementById('sort-suit-desc').addEventListener('click', () => {
+  sortSuitDir = 'desc';
+  if (gameState) renderMyHand(gameState);
+});
 
 // ─── Toast ────────────────────────────────────────────────────────────────────
 

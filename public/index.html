@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>One-High</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@400;700;900&family=DM+Mono:wght@400;500&family=DM+Sans:wght@300;400;500&family=Outfit:wght@700;900&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/css/style.css" />
 </head>
 <body>
@@ -44,7 +44,7 @@
   <!-- Score bar -->
   <header class="scorebar">
     <div class="score-team team-a-score">
-      <span class="score-label">TEAM A</span>
+      <span class="score-label" id="label-a">TEAM A</span>
       <span class="score-val" id="score-a">0</span>
     </div>
     <div class="game-info-center">
@@ -53,16 +53,16 @@
     </div>
     <div class="score-team team-b-score">
       <span class="score-val" id="score-b">0</span>
-      <span class="score-label">TEAM B</span>
+      <span class="score-label" id="label-b">TEAM B</span>
     </div>
   </header>
 
-  <!-- Table -->
+  <!-- Table: opponents + center + your hand -->
   <main class="table-area">
 
     <!-- Opponent (across) -->
     <div class="player-zone across-zone">
-      <div class="player-info" id="across-info">
+      <div class="player-info">
         <span class="player-name" id="across-name">—</span>
         <span class="player-tag" id="across-tag"></span>
       </div>
@@ -71,83 +71,107 @@
 
     <!-- Left opponent -->
     <div class="player-zone left-zone">
-      <div class="player-info" id="left-info">
+      <div class="player-info">
         <span class="player-name" id="left-name">—</span>
         <span class="player-tag" id="left-tag"></span>
       </div>
       <div class="opponent-hand vertical" id="left-hand"></div>
     </div>
 
-    <!-- Center play area -->
+    <!-- Center play area — trick cards + action panel lives here -->
     <div class="center-area">
       <div class="trump-indicator" id="trump-indicator"></div>
+
       <div class="trick-area" id="trick-area">
         <div class="trick-slot" id="trick-across"></div>
         <div class="trick-row">
           <div class="trick-slot" id="trick-left"></div>
-          <div class="trick-slot" id="trick-self"></div>
+          <div class="trick-slot trick-slot-empty"></div>
+          <div class="trick-slot" id="trick-right"></div>
         </div>
-        <div class="trick-slot" id="trick-right"></div>
+        <div class="trick-slot" id="trick-self"></div>
       </div>
+
       <div class="trick-count-bar">
         <span id="trick-count-a" class="trick-count">A: 0</span>
         <span id="trick-count-b" class="trick-count">B: 0</span>
+      </div>
+
+      <!-- Kitty card display — shown during kitty phase -->
+      <div id="kitty-display" class="kitty-display hidden"></div>
+
+      <!-- Action panel now lives in the center, not at the bottom -->
+      <div class="action-panel" id="action-panel">
+
+        <!-- Bidding controls -->
+        <div class="action-section" id="bid-controls" style="display:none">
+          <div class="bid-row">
+            <button class="btn-sm" id="bid-minus">−5</button>
+            <span class="bid-amount" id="bid-amount">75</span>
+            <button class="btn-sm" id="bid-plus">+5</button>
+          </div>
+          <div class="bid-row">
+            <button class="btn-primary" id="bid-submit">Bid</button>
+            <button class="btn-ghost" id="bid-pass">Pass</button>
+            <button class="btn-ghost" id="redeal-btn">Redeal?</button>
+          </div>
+        </div>
+
+        <!-- Kitty / trump controls -->
+        <div class="action-section" id="kitty-controls" style="display:none">
+          <p class="kitty-instruction">Select a card from your hand to discard, then choose trump:</p>
+          <div class="trump-row" id="trump-buttons">
+            <button class="trump-btn suit-red" data-suit="Red">Red</button>
+            <button class="trump-btn suit-black" data-suit="Black">Black</button>
+            <button class="trump-btn suit-yellow" data-suit="Yellow">Yellow</button>
+            <button class="trump-btn suit-green" data-suit="Green">Green</button>
+            <button class="trump-btn no-trump" data-suit="NoTrump">No Trump</button>
+          </div>
+        </div>
+
+        <!-- Status message -->
+        <div class="action-section" id="status-msg">
+          <p id="status-text">Waiting…</p>
+        </div>
+
       </div>
     </div>
 
     <!-- Right opponent -->
     <div class="player-zone right-zone">
-      <div class="player-info" id="right-info">
+      <div class="player-info">
         <span class="player-name" id="right-name">—</span>
         <span class="player-tag" id="right-tag"></span>
       </div>
       <div class="opponent-hand vertical" id="right-hand"></div>
     </div>
 
-    <!-- Self -->
+    <!-- Your hand — spans full width at the bottom of the grid -->
     <div class="player-zone self-zone">
-      <div class="player-info self-info">
-        <span class="player-name" id="self-name">You</span>
-        <span class="player-tag" id="self-tag"></span>
+      <div class="self-header">
+        <div class="player-info self-info">
+          <span class="player-name" id="self-name">You</span>
+          <span class="player-tag" id="self-tag"></span>
+        </div>
+        <div class="sort-controls">
+          <div class="sort-group">
+            <span class="sort-label">Cards</span>
+            <button class="sort-btn active" id="sort-num-asc" title="Low → High">2→A</button>
+            <button class="sort-btn" id="sort-num-desc" title="High → Low">A→2</button>
+          </div>
+          <div class="sort-group">
+            <span class="sort-label">Suits</span>
+            <button class="sort-btn active" id="sort-suit-asc" title="Fewest cards first">↑#</button>
+            <button class="sort-btn" id="sort-suit-desc" title="Most cards first">↓#</button>
+          </div>
+        </div>
       </div>
-      <div class="hand" id="my-hand"></div>
+      <div class="hand-scroll">
+        <div class="hand" id="my-hand"></div>
+      </div>
     </div>
 
   </main>
-
-  <!-- Action panel -->
-  <div class="action-panel" id="action-panel">
-    <!-- Bidding controls -->
-    <div class="action-section" id="bid-controls" style="display:none">
-      <div class="bid-row">
-        <button class="btn-sm" id="bid-minus">−5</button>
-        <span class="bid-amount" id="bid-amount">75</span>
-        <button class="btn-sm" id="bid-plus">+5</button>
-      </div>
-      <div class="bid-row">
-        <button class="btn-primary" id="bid-submit">Bid</button>
-        <button class="btn-ghost" id="bid-pass">Pass</button>
-        <button class="btn-ghost" id="redeal-btn">Redeal?</button>
-      </div>
-    </div>
-
-    <!-- Kitty / trump controls -->
-    <div class="action-section" id="kitty-controls" style="display:none">
-      <p class="kitty-instruction">Select a card to discard, then choose Trump:</p>
-      <div class="trump-row" id="trump-buttons">
-        <button class="trump-btn suit-red" data-suit="Red">Red</button>
-        <button class="trump-btn suit-black" data-suit="Black">Black</button>
-        <button class="trump-btn suit-yellow" data-suit="Yellow">Yellow</button>
-        <button class="trump-btn suit-green" data-suit="Green">Green</button>
-        <button class="trump-btn no-trump" data-suit="NoTrump">No Trump</button>
-      </div>
-    </div>
-
-    <!-- Status message -->
-    <div class="action-section" id="status-msg">
-      <p id="status-text">Waiting…</p>
-    </div>
-  </div>
 
 </div>
 
