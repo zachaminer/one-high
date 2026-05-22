@@ -35,6 +35,12 @@
       </div>
       <p class="team-note">Seats 1 &amp; 3 = Team A &nbsp;·&nbsp; Seats 2 &amp; 4 = Team B</p>
     </div>
+
+    <!-- Seat popover — shown when clicking a filled seat -->
+    <div id="seat-popover" class="seat-popover hidden">
+      <p class="seat-popover-name" id="seat-popover-name"></p>
+      <button class="seat-popover-btn seat-popover-remove" id="seat-popover-remove">Remove player</button>
+    </div>
   </div>
 </div>
 
@@ -46,18 +52,63 @@
     <div class="score-team team-a-score">
       <span class="score-label" id="label-a">TEAM A</span>
       <span class="score-val" id="score-a">0</span>
+      <span class="score-divider"></span>
+      <span class="score-round" id="round-score-a">—</span>
     </div>
     <div class="game-info-center">
-      <span id="phase-label">—</span>
-      <span id="bid-label" class="bid-display"></span>
+      <button class="settings-btn" id="settings-btn" title="Settings">⚙ Settings</button>
     </div>
     <div class="score-team team-b-score">
+      <span class="score-round" id="round-score-b">—</span>
+      <span class="score-divider"></span>
       <span class="score-val" id="score-b">0</span>
       <span class="score-label" id="label-b">TEAM B</span>
     </div>
   </header>
-  <button class="btn-reset" id="reset-btn" title="End game &amp; return to lobby">✕ End</button>
 
+  <!-- Settings panel — slides down from scorebar -->
+  <div id="settings-panel" class="settings-panel hidden">
+    <div class="settings-body">
+      <div class="settings-row">
+        <span class="settings-label">Card order</span>
+        <div class="sort-group">
+          <button class="sort-btn active" id="sort-num-asc">2→A</button>
+          <button class="sort-btn" id="sort-num-desc">A→2</button>
+        </div>
+      </div>
+      <div class="settings-row">
+        <span class="settings-label">Suit order</span>
+        <div class="sort-group">
+          <button class="sort-btn active" id="sort-suit-asc">Fewest first</button>
+          <button class="sort-btn" id="sort-suit-desc">Most first</button>
+        </div>
+      </div>
+      <div class="settings-row settings-row-end settings-undo-row" id="undo-row" style="display:none">
+        <button class="btn-undo" id="undo-btn">Undo Last Play</button>
+      </div>
+      <div class="settings-row settings-row-end">
+        <button class="btn-end-game" id="reset-btn">End Game</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Trick piles — positioned in top corners via CSS -->
+  <div class="trick-pile trick-pile-a empty" id="trick-pile-a">
+    <div class="trick-pile-deck">
+      <div class="trick-pile-card"></div>
+      <div class="trick-pile-card"></div>
+      <div class="trick-pile-card"></div>
+    </div>
+    <div class="trick-pile-badge" id="trick-pile-badge-a">0</div>
+  </div>
+  <div class="trick-pile trick-pile-b empty" id="trick-pile-b">
+    <div class="trick-pile-deck">
+      <div class="trick-pile-card"></div>
+      <div class="trick-pile-card"></div>
+      <div class="trick-pile-card"></div>
+    </div>
+    <div class="trick-pile-badge" id="trick-pile-badge-b">0</div>
+  </div>
   <!-- Table: opponents + center + your hand -->
   <main class="table-area">
 
@@ -66,6 +117,7 @@
       <div class="player-info">
         <span class="player-name" id="across-name">—</span>
         <span class="player-tag" id="across-tag"></span>
+        <span class="bid-tag hidden" id="across-bid"></span>
       </div>
       <div class="opponent-hand" id="across-hand"></div>
     </div>
@@ -75,6 +127,7 @@
       <div class="player-info">
         <span class="player-name" id="left-name">—</span>
         <span class="player-tag" id="left-tag"></span>
+        <span class="bid-tag hidden" id="left-bid"></span>
       </div>
       <div class="opponent-hand vertical" id="left-hand"></div>
     </div>
@@ -82,6 +135,10 @@
     <!-- Center play area — trick cards + action panel lives here -->
     <div class="center-area">
       <div class="trump-indicator" id="trump-indicator"></div>
+
+      <!-- Holding piles — face-up cards sit here after trick, before flying to fixed pile -->
+      <div class="trick-holding trick-holding-a hidden" id="trick-holding-a"></div>
+      <div class="trick-holding trick-holding-b hidden" id="trick-holding-b"></div>
 
       <div class="trick-area" id="trick-area">
         <div class="trick-slot" id="trick-across"></div>
@@ -93,11 +150,6 @@
         <div class="trick-slot" id="trick-self"></div>
       </div>
 
-      <div class="trick-count-bar">
-        <span id="trick-count-a" class="trick-count">A: 0</span>
-        <span id="trick-count-b" class="trick-count">B: 0</span>
-      </div>
-
       <!-- Kitty card display — shown during kitty phase -->
       <div id="kitty-display" class="kitty-display hidden"></div>
 
@@ -106,7 +158,12 @@
 
         <!-- Bidding controls -->
         <div class="action-section" id="bid-controls" style="display:none">
-          <div class="bid-row">
+          <!-- Bid history — all 4 players -->
+          <div class="bid-history" id="bid-history"></div>
+          <!-- Current high bid callout -->
+          <div class="bid-current" id="bid-current"></div>
+          <!-- Your turn controls -->
+          <div class="bid-row" id="bid-input-row">
             <button class="btn-sm" id="bid-minus">−5</button>
             <span class="bid-amount" id="bid-amount">75</span>
             <button class="btn-sm" id="bid-plus">+5</button>
@@ -116,6 +173,7 @@
             <button class="btn-ghost" id="bid-pass">Pass</button>
             <button class="btn-ghost" id="redeal-btn">Redeal?</button>
           </div>
+          <p id="bid-waiting-msg" class="bid-waiting-msg" style="display:none"></p>
         </div>
 
         <!-- Kitty / trump controls -->
@@ -143,6 +201,7 @@
       <div class="player-info">
         <span class="player-name" id="right-name">—</span>
         <span class="player-tag" id="right-tag"></span>
+        <span class="bid-tag hidden" id="right-bid"></span>
       </div>
       <div class="opponent-hand vertical" id="right-hand"></div>
     </div>
@@ -153,18 +212,7 @@
         <div class="player-info self-info">
           <span class="player-name" id="self-name">You</span>
           <span class="player-tag" id="self-tag"></span>
-        </div>
-        <div class="sort-controls">
-          <div class="sort-group">
-            <span class="sort-label">Cards</span>
-            <button class="sort-btn active" id="sort-num-asc" title="Low → High">2→A</button>
-            <button class="sort-btn" id="sort-num-desc" title="High → Low">A→2</button>
-          </div>
-          <div class="sort-group">
-            <span class="sort-label">Suits</span>
-            <button class="sort-btn active" id="sort-suit-asc" title="Fewest cards first">↑#</button>
-            <button class="sort-btn" id="sort-suit-desc" title="Most cards first">↓#</button>
-          </div>
+          <span class="bid-tag hidden" id="self-bid"></span>
         </div>
       </div>
       <div class="hand-scroll">

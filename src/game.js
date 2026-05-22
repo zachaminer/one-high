@@ -152,7 +152,7 @@ function createGame(playerIds) {
   return {
     playerIds,           // [id, id, id, id]
     scores: [0, 0],      // [team0, team1]
-    dealerIndex: 0,
+    dealerIndex: Math.floor(Math.random() * 4),
     phase: 'waiting',    // waiting | dealing | bidding | kitty | playing | scoring
     round: null,
   };
@@ -167,6 +167,7 @@ function startRound(game) {
     hands,               // hands[playerIndex] = [card, ...]
     kitty,
     bids: [null, null, null, null],   // null = not yet bid, 'pass' = passed
+    bidLog: [],              // [{seat, amount}] in chronological order
     highBid: 0,
     highBidder: null,
     currentBidder: firstBidder,
@@ -243,6 +244,21 @@ class GameEngine {
     return { redealt: true, payload: this._roundStartPayload() };
   }
 
+  // ── Redeal vote ──────────────────────────────────────────────────────────
+
+  voteRedeal(seatIndex) {
+    const g = this.game;
+    if (g.phase !== 'redeal-vote') return { error: 'Not in redeal-vote phase' };
+    g.round.redealVotes[seatIndex] = true;
+    const allVoted = g.round.redealVotes.every(v => v);
+    if (allVoted) {
+      g.dealerIndex = (g.dealerIndex + 1) % 4;
+      startRound(g);
+      return { redealt: true };
+    }
+    return { voted: true };
+  }
+
   // ── Bidding ──────────────────────────────────────────────────────────────
 
   placeBid(seatIndex, amount) {
@@ -260,6 +276,7 @@ class GameEngine {
         return { error: 'The first bidder must bid at least 75' };
       }
       r.bids[seatIndex] = 'pass';
+      r.bidLog.push({ seat: seatIndex, amount: 'pass' });
       return this._advanceBidding();
     }
 
@@ -272,6 +289,7 @@ class GameEngine {
     r.bids[seatIndex] = amount;
     r.highBid = amount;
     r.highBidder = seatIndex;
+    r.bidLog.push({ seat: seatIndex, amount });
 
     return this._advanceBidding();
   }
@@ -284,15 +302,15 @@ class GameEngine {
     const passed = r.bids.filter(b => b === 'pass').length;
     const active = 4 - passed;
 
-    // Special: first bid was 75 and all others pass immediately
+    // Special: first bid was 75 and all others pass — enter redeal-vote phase
     if (
       r.highBid === MIN_BID &&
       r.highBidder === r.firstBidder &&
       passed === 3
     ) {
-      // Auto-redeal
-      startRound(g);
-      return { autoRedeal: true, payload: this._roundStartPayload() };
+      g.phase = 'redeal-vote';
+      r.redealVotes = [false, false, false, false];
+      return { redealVote: true };
     }
 
     if (active === 1) {
@@ -375,6 +393,59 @@ class GameEngine {
     };
   }
 
+  // ── Undo last card played in current trick ───────────────────────────────
+
+  undoLastPlay(requestingSeat) {
+    const g = this.game;
+    const r = g.round;
+
+    if (g.phase !== 'playing') return { error: 'Not in playing phase' };
+
+    // Case 1: trick still in progress — last play is still in currentTrick
+    if (r.currentTrick.length > 0) {
+      const lastPlay = r.currentTrick[r.currentTrick.length - 1];
+      if (lastPlay.playerIndex !== requestingSeat) {
+        return { error: 'You can only undo your own last play' };
+      }
+      r.hands[requestingSeat].push(lastPlay.card);
+      r.currentTrick.pop();
+
+      return {
+        phase: 'playing',
+        currentTrick: r.currentTrick,
+        hands: r.hands,
+        currentLeader: r.currentLeader,
+        undone: true,
+      };
+    }
+
+    // Case 2: trick was just completed — restore from snapshot
+    const snap = r.lastTrickSnapshot;
+    if (!snap) return { error: 'No card to undo' };
+    if (snap.lastPlaySeat !== requestingSeat) {
+      return { error: 'You can only undo your own last play' };
+    }
+
+    // Reverse _completeTrick: restore the trick, captured cards, trick counts, and leader
+    r.hands[requestingSeat].push(snap.trick[snap.trick.length - 1].card);
+    r.currentTrick = snap.trick.slice(0, 3); // 3 plays remain after removing the 4th
+    r.capturedCards = snap.capturedCards;
+    r.trickCounts = snap.trickCounts;
+    // Undo the winner assignment — leader reverts to whoever led this trick
+    r.currentLeader = snap.trick[0].playerIndex;
+    r.tricks.pop();
+    r.lastTrickSnapshot = null;
+
+    return {
+      phase: 'playing',
+      currentTrick: r.currentTrick,
+      hands: r.hands,
+      currentLeader: r.currentLeader,
+      trickCounts: r.trickCounts,
+      undone: true,
+    };
+  }
+
   // ── Playing ──────────────────────────────────────────────────────────────
 
   playCard(seatIndex, cardId) {
@@ -405,12 +476,20 @@ class GameEngine {
       }
     }
 
-    // Play the card
+    // Play the card — new play invalidates any prior completed-trick snapshot
+    r.lastTrickSnapshot = null;
     hand.splice(cardIdx, 1);
     r.currentTrick.push({ playerIndex: seatIndex, card });
 
     // Trick complete?
     if (r.currentTrick.length === 4) {
+      // Save snapshot before resolving so undo can reverse the 4th play
+      r.lastTrickSnapshot = {
+        trick: r.currentTrick.map(p => ({ ...p, card: { ...p.card } })),
+        capturedCards: [r.capturedCards[0].map(c => ({ ...c })), r.capturedCards[1].map(c => ({ ...c }))],
+        trickCounts: [...r.trickCounts],
+        lastPlaySeat: seatIndex,
+      };
       return this._completeTrick();
     }
 
@@ -431,11 +510,20 @@ class GameEngine {
     const winner = trickWinner(r.currentTrick, leadSuit, r.trumpSuit);
     const winTeam = this.teamOf(winner);
 
+    // Snapshot points before collecting so client can animate from old → new
+    const prevRoundPoints = [countPoints(r.capturedCards[0]), countPoints(r.capturedCards[1])];
+
     // Collect pointers
     for (const { card } of r.currentTrick) {
       if (isPointer(card)) r.capturedCards[winTeam].push(card);
     }
     r.trickCounts[winTeam]++;
+
+    // Detect the exact trick that clinches the tricks bonus
+    // Bid team needs 8, non-bid team needs 7 (14 - 8 + 1)
+    const bidTeam = this.teamOf(r.bidWinner);
+    const threshold = winTeam === bidTeam ? 8 : 7;
+    const tricksBonus = r.trickCounts[winTeam] === threshold ? winTeam : null;
 
     r.tricks.push({ plays: [...r.currentTrick], winner });
     r.currentTrick = [];
@@ -449,10 +537,13 @@ class GameEngine {
     return {
       phase: 'playing',
       lastTrickWinner: winner,
+      lastTrickPlays: r.tricks[r.tricks.length - 1].plays,
       trickCounts: r.trickCounts,
       currentLeader: r.currentLeader,
       currentTrick: [],
       hands: r.hands,
+      prevRoundPoints,
+      tricksBonus,
     };
   }
 
@@ -463,7 +554,7 @@ class GameEngine {
     // Count pointer points per team
     const pts = [countPoints(r.capturedCards[0]), countPoints(r.capturedCards[1])];
 
-    // Tricks bonus: 8+ tricks wins bonus (14 tricks total)
+    // Bid team needs 8 tricks for bonus; non-bid team needs 7
     const bidTeam = this.teamOf(r.bidWinner);
     const nonBidTeam = 1 - bidTeam;
 
@@ -481,6 +572,9 @@ class GameEngine {
 
     g.scores[0] += scored[0];
     g.scores[1] += scored[1];
+
+    // Persist so getPublicState can expose it during scoring/gameover phase
+    r.roundScored = scored;
 
     // Check win
     let winner = null;
@@ -506,6 +600,8 @@ class GameEngine {
       trickCounts: r.trickCounts,
       capturedCards: r.capturedCards,
       winner,
+      lastTrickWinner: r.tricks[r.tricks.length - 1]?.winner,
+      lastTrickPlays:  r.tricks[r.tricks.length - 1]?.plays ?? [],
     };
 
     if (winner === null) {
@@ -547,7 +643,15 @@ class GameEngine {
         currentLeader: r.currentLeader,
         trickCounts: r.trickCounts,
         tricks: r.tricks.length,
+        lastTrickUndoableBySeat: r.lastTrickSnapshot?.lastPlaySeat ?? null,
         kitty: r.kitty,
+        roundPoints: [countPoints(r.capturedCards[0]), countPoints(r.capturedCards[1])],
+        roundScored: r.roundScored ?? null,
+        bidLog: r.bidLog ?? [],
+        // Exposed only during redeal-vote so all players can see all hands
+        allHands: g.phase === 'redeal-vote' ? r.hands : null,
+        redealVotes: r.redealVotes ?? null,
+        firstBidder: r.firstBidder,
       } : null,
     };
   }

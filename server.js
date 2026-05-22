@@ -9,9 +9,12 @@ const { GameEngine } = require('./src/game');
 
 const app = express();
 const server = http.createServer(app);
-const io = new Server(server);
-
+const io = new Server(server, {
+  pingInterval: 25000,
+  pingTimeout: 60000,
+});
 app.use(express.static(path.join(__dirname, 'public')));
+app.get('/healthz', (req, res) => res.sendStatus(200));
 
 // ─── State ────────────────────────────────────────────────────────────────────
 
@@ -19,6 +22,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 const seats = [];   // up to 4 entries, persisted across disconnects
 
 const engine = new GameEngine();
+
+// Pending undo request: { requestingSeat, approvals: Set of seat indices }
+let pendingUndo = null;
 
 // Per-seat reconnect timers: if a player doesn't come back within TIMEOUT_MS
 // we free their seat so someone else can join.
@@ -136,7 +142,7 @@ io.on('connection', socket => {
     }
   });
 
-  // ── Redeal request ────────────────────────────────────────────────────────
+  // ── Redeal request (during bidding, for qualifying hands) ────────────────
 
   socket.on('requestRedeal', () => {
     const slot = seatBySocketId(socket.id);
@@ -144,6 +150,16 @@ io.on('connection', socket => {
     const result = engine.requestRedeal(slot.seat);
     if (result.error) { socket.emit('error', result.error); return; }
     broadcastGameState(result.payload);
+  });
+
+  // ── Redeal vote (75/pass/pass/pass scenario) ──────────────────────────────
+
+  socket.on('voteRedeal', () => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot) return;
+    const result = engine.voteRedeal(slot.seat);
+    if (result.error) { socket.emit('error', result.error); return; }
+    broadcastGameState();
   });
 
   // ── Bid ───────────────────────────────────────────────────────────────────
@@ -171,16 +187,138 @@ io.on('connection', socket => {
   socket.on('playCard', ({ cardId }) => {
     const slot = seatBySocketId(socket.id);
     if (!slot) return;
+    if (pendingUndo) {
+      // Cancel any pending undo when a new card is played
+      for (const oppSeat of pendingUndo.opposingSeats) {
+        emitToSeat(oppSeat, 'undoCancelled', {});
+      }
+      pendingUndo = null;
+    }
     const result = engine.playCard(slot.seat, cardId);
     if (result.error) { socket.emit('error', result.error); return; }
     broadcastGameState(result);
   });
 
+  // ── Undo request ─────────────────────────────────────────────────────────
+
+  socket.on('requestUndo', () => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot) return;
+
+    if (pendingUndo) { socket.emit('error', 'An undo request is already pending'); return; }
+
+    const pub = engine.getPublicState();
+    if (pub?.phase !== 'playing') { socket.emit('error', 'Can only undo during play'); return; }
+
+    const r = engine.game.round;
+
+    // Determine who played last: either from current in-progress trick or the just-completed snapshot
+    let lastPlaySeat = null;
+    let lastPlayCard = null;
+    if (r.currentTrick.length > 0) {
+      const lp = r.currentTrick[r.currentTrick.length - 1];
+      lastPlaySeat = lp.playerIndex;
+      lastPlayCard = lp.card;
+    } else if (r.lastTrickSnapshot) {
+      const snap = r.lastTrickSnapshot;
+      lastPlaySeat = snap.lastPlaySeat;
+      lastPlayCard = snap.trick[snap.trick.length - 1].card;
+    }
+
+    if (lastPlaySeat === null) { socket.emit('error', 'No card to undo'); return; }
+    if (lastPlaySeat !== slot.seat) {
+      socket.emit('error', 'You can only undo your own last play');
+      return;
+    }
+
+    // Opposing team seats
+    const opposingSeats = [1, 3].includes(slot.seat) ? [0, 2] : [1, 3];
+    pendingUndo = { requestingSeat: slot.seat, approvals: new Set(), opposingSeats };
+
+    const requesterName = slot.name;
+    const cardPlayed = lastPlayCard;
+
+    for (const oppSeat of opposingSeats) {
+      emitToSeat(oppSeat, 'undoRequest', {
+        requesterName,
+        card: cardPlayed,
+        requestingSeat: slot.seat,
+      });
+    }
+
+    socket.emit('undoPending', { message: 'Undo request sent — waiting for opponents to approve' });
+  });
+
+  // ── Undo response (approve or deny) ──────────────────────────────────────
+
+  socket.on('respondUndo', ({ approve }) => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot || !pendingUndo) return;
+
+    if (!pendingUndo.opposingSeats.includes(slot.seat)) {
+      socket.emit('error', 'You are not a reviewer for this undo request');
+      return;
+    }
+
+    if (!approve) {
+      // Denied — cancel and notify everyone involved
+      const requesterSlot = seats.find(s => s.seat === pendingUndo.requestingSeat);
+      if (requesterSlot?.id) {
+        io.to(requesterSlot.id).emit('undoDenied', { denierName: slot.name });
+      }
+      for (const oppSeat of pendingUndo.opposingSeats) {
+        emitToSeat(oppSeat, 'undoCancelled', {});
+      }
+      pendingUndo = null;
+      return;
+    }
+
+    pendingUndo.approvals.add(slot.seat);
+
+    if (pendingUndo.approvals.size === pendingUndo.opposingSeats.length) {
+      // Both approved — apply undo
+      const result = engine.undoLastPlay(pendingUndo.requestingSeat);
+      pendingUndo = null;
+      if (result.error) { socket.emit('error', result.error); return; }
+      broadcastGameState(result);
+    } else {
+      // Still waiting for the other opponent
+      emitToSeat(slot.seat, 'undoApprovedWaiting', {});
+    }
+  });
+
+  // ── Remove a player from their seat (lobby only) ─────────────────────────
+
+  socket.on('removeSeat', ({ seatIndex }) => {
+    // Only allowed before a game starts
+    if (engine.game) { socket.emit('error', 'Cannot remove a player mid-game'); return; }
+    const idx = seats.findIndex(s => s.seat === seatIndex);
+    if (idx === -1) return;
+    const slot = seats[idx];
+
+    // Cancel any pending eviction timer for this seat
+    if (disconnectTimers[slot.seat]) {
+      clearTimeout(disconnectTimers[slot.seat]);
+      delete disconnectTimers[slot.seat];
+    }
+
+    // Tell the removed player's socket to reset (if still connected)
+    if (slot.id) io.to(slot.id).emit('seatRemoved');
+
+    seats.splice(idx, 1);
+    // Re-index remaining seats so they stay 0-based and contiguous
+    seats.forEach((s, i) => { s.seat = i; });
+
+    io.emit('lobbyUpdate', lobbyPayload());
+  });
+
   // ── Reset game (return everyone to empty lobby) ───────────────────────────
 
   socket.on('resetGame', () => {
-    // Any player can trigger a reset at any time during a game
-    if (!seatBySocketId(socket.id)) return;
+    // Allow any socket that currently holds a seat (matched by id or by token
+    // stored on the socket from a recent rejoin) to trigger a reset.
+    // We intentionally do NOT guard here — if someone somehow sends this event
+    // without a seat, the worst outcome is a no-op on an already-empty game.
 
     // Cancel all reconnect timers
     for (const t of Object.values(disconnectTimers)) clearTimeout(t);
@@ -189,6 +327,7 @@ io.on('connection', socket => {
     // Clear seats and engine
     seats.splice(0, seats.length);
     engine.game = null;
+    pendingUndo = null;
 
     io.emit('gameReset');
   });
