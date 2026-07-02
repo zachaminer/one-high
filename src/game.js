@@ -393,6 +393,45 @@ class GameEngine {
     };
   }
 
+  // ── Undo last bid placed ─────────────────────────────────────────────────
+
+  undoLastBid(requestingSeat) {
+    const g = this.game;
+    const r = g.round;
+
+    if (g.phase !== 'bidding') return { error: 'Not in bidding phase' };
+    if (r.bidLog.length === 0) return { error: 'No bid to undo' };
+
+    const lastEntry = r.bidLog[r.bidLog.length - 1];
+    if (lastEntry.seat !== requestingSeat) {
+      return { error: 'You can only undo your own last bid' };
+    }
+
+    r.bidLog.pop();
+    r.bids[requestingSeat] = null;
+
+    // Recompute highBid / highBidder from the remaining log
+    r.highBid = 0;
+    r.highBidder = null;
+    for (const entry of r.bidLog) {
+      if (typeof entry.amount === 'number' && entry.amount > r.highBid) {
+        r.highBid = entry.amount;
+        r.highBidder = entry.seat;
+      }
+    }
+
+    r.currentBidder = requestingSeat;
+
+    return {
+      phase: 'bidding',
+      bids: r.bids,
+      highBid: r.highBid,
+      highBidder: r.highBidder,
+      currentBidder: r.currentBidder,
+      undone: true,
+    };
+  }
+
   // ── Undo last card played in current trick ───────────────────────────────
 
   undoLastPlay(requestingSeat) {
@@ -534,6 +573,14 @@ class GameEngine {
       return this._scoreRound();
     }
 
+    // Check sweep: does any single player hold cards that beat all remaining cards?
+    const sweepSeat = this._findSweepSeat(r);
+    if (sweepSeat !== null) {
+      return this._applySweep(sweepSeat, { prevRoundPoints, tricksBonus,
+        lastTrickWinner: winner,
+        lastTrickPlays: r.tricks[r.tricks.length - 1].plays });
+    }
+
     return {
       phase: 'playing',
       lastTrickWinner: winner,
@@ -547,7 +594,63 @@ class GameEngine {
     };
   }
 
-  _scoreRound() {
+  _findSweepSeat(r) {
+    const allCards = [];
+    for (let s = 0; s < 4; s++) {
+      for (const card of r.hands[s]) allCards.push({ seat: s, card });
+    }
+    if (allCards.length === 0) return null;
+
+    for (let s = 0; s < 4; s++) {
+      const hand = r.hands[s];
+      if (hand.length === 0) continue;
+      // Every card this player leads must beat every card held by others
+      const others = allCards.filter(e => e.seat !== s).map(e => e.card);
+      if (others.length === 0) return s; // only player left
+
+      const canSweep = hand.every(myCard => {
+        const leadSuit = myCard.id === 'Rook' ? '_TRUMP_' : myCard.suit;
+        const myRank = cardRank(myCard, leadSuit, r.trumpSuit);
+        return others.every(oCard => myRank > cardRank(oCard, leadSuit, r.trumpSuit));
+      });
+
+      if (canSweep) return s;
+    }
+    return null;
+  }
+
+  _applySweep(sweepSeat, meta) {
+    const g = this.game;
+    const r = g.round;
+    const sweepTeam = this.teamOf(sweepSeat);
+
+    // Snapshot remaining hands for the client animation before clearing
+    const remainingHands = r.hands.map(h => [...h]);
+    // Each hand has the same number of cards = remaining tricks to play
+    const remainingTricks = r.hands[sweepSeat].length;
+
+    // Award all remaining pointer cards to sweep team; clear all hands
+    for (let s = 0; s < 4; s++) {
+      for (const card of r.hands[s]) {
+        if (isPointer(card)) r.capturedCards[sweepTeam].push(card);
+      }
+      r.hands[s] = [];
+    }
+    r.trickCounts[sweepTeam] += remainingTricks;
+
+    return this._scoreRound({
+      sweep: true,
+      sweepTeam,
+      sweepSeat,
+      remainingHands,
+      lastTrickWinner: meta.lastTrickWinner,
+      lastTrickPlays: meta.lastTrickPlays,
+      prevRoundPoints: meta.prevRoundPoints,
+      tricksBonus: meta.tricksBonus,
+    });
+  }
+
+  _scoreRound(sweepMeta = null) {
     const g = this.game;
     const r = g.round;
 
@@ -600,9 +703,18 @@ class GameEngine {
       trickCounts: r.trickCounts,
       capturedCards: r.capturedCards,
       winner,
-      lastTrickWinner: r.tricks[r.tricks.length - 1]?.winner,
-      lastTrickPlays:  r.tricks[r.tricks.length - 1]?.plays ?? [],
+      lastTrickWinner: sweepMeta?.lastTrickWinner ?? r.tricks[r.tricks.length - 1]?.winner,
+      lastTrickPlays:  sweepMeta?.lastTrickPlays  ?? r.tricks[r.tricks.length - 1]?.plays ?? [],
     };
+
+    if (sweepMeta) {
+      result.sweep = true;
+      result.sweepTeam = sweepMeta.sweepTeam;
+      result.sweepSeat = sweepMeta.sweepSeat;
+      result.sweepHands = sweepMeta.remainingHands;
+      result.prevRoundPoints = sweepMeta.prevRoundPoints;
+      result.tricksBonus = sweepMeta.tricksBonus;
+    }
 
     if (winner === null) {
       // Prep next round

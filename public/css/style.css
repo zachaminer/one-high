@@ -56,6 +56,7 @@ button, .card.playable {
 
 /* ─── Lobby ────────────────────────────────────────────────────────────────── */
 #lobby-screen {
+  position: relative;
   align-items: center;
   justify-content: center;
   background: radial-gradient(ellipse at 50% 30%, var(--felt-light) 0%, var(--felt-dark) 70%);
@@ -68,7 +69,7 @@ button, .card.playable {
   display: flex;
   flex-direction: column;
   gap: 2rem;
-  align-items: center;
+  align-items: stretch;
 }
 
 .lobby-header { text-align: center; }
@@ -94,7 +95,7 @@ button, .card.playable {
   opacity: 0.85;
 }
 
-.join-form { display: flex; gap: 0.5rem; width: 100%; }
+.join-form { display: flex; gap: 0.5rem; width: 100%; justify-content: center; }
 
 .join-form input {
   flex: 1;
@@ -158,35 +159,508 @@ button, .card.playable {
 }
 .btn-sm:hover { background: rgba(201,168,76,0.2); }
 
-.seats-panel { width: 100%; text-align: center; }
-.seats-panel h3 {
-  font-family: 'DM Mono', monospace;
-  font-size: 0.72rem;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: var(--gold);
-  margin-bottom: 0.8rem;
+.seats-panel { width: 100%; }
+
+.seats-columns {
+  display: flex;
+  gap: 1rem;
 }
-.seats { display: flex; flex-direction: column; gap: 0.5rem; }
-.seat-row { display: flex; gap: 0.5rem; }
+
+.seat-column {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.seat-team-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.65rem;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  text-align: center;
+  padding-bottom: 0.3rem;
+  border-bottom: 2px solid currentColor;
+}
+.team-a-label { color: var(--team-a); }
+.team-b-label { color: var(--team-b); }
 
 .seat {
-  flex: 1;
-  padding: 0.6rem 1rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
   border-radius: var(--radius);
   display: flex;
   flex-direction: column;
-  gap: 0.15rem;
+  align-items: center;
+  gap: 0.2rem;
   background: rgba(0,0,0,0.25);
-  border: 1px solid rgba(255,255,255,0.1);
+  border: 2px solid rgba(255,255,255,0.1);
+  transition: background 0.15s, border-color 0.15s, transform 0.1s;
+  cursor: default;
+  position: relative;
 }
-.seat.team-a { border-left: 3px solid var(--team-a); }
-.seat.team-b { border-left: 3px solid var(--team-b); }
+.seat.team-a { border-color: rgba(58,123,213,0.35); }
+.seat.team-b { border-color: rgba(213,58,58,0.35); }
+
+/* Available = joinable button */
+.seat.available {
+  cursor: pointer;
+  background: rgba(0,0,0,0.15);
+}
+.seat.available.team-a {
+  border-color: var(--team-a);
+  box-shadow: 0 0 0 0 rgba(58,123,213,0);
+}
+.seat.available.team-b {
+  border-color: var(--team-b);
+  box-shadow: 0 0 0 0 rgba(213,58,58,0);
+}
+.seat.available:hover { transform: translateY(-2px); }
+.seat.available.team-a:hover { background: rgba(58,123,213,0.18); box-shadow: 0 4px 18px rgba(58,123,213,0.25); }
+.seat.available.team-b:hover { background: rgba(213,58,58,0.18); box-shadow: 0 4px 18px rgba(213,58,58,0.25); }
+.seat.available:active { transform: translateY(0); }
+
+/* Filled = taken slot — bright border by default, dims when ready */
 .seat.filled { background: rgba(0,0,0,0.4); cursor: pointer; }
-.seat.filled:hover { background: rgba(0,0,0,0.55); border-color: rgba(255,255,255,0.25); }
+.seat.filled:hover { background: rgba(0,0,0,0.55); }
+.seat.filled.team-a { border-color: var(--team-a); box-shadow: 0 0 10px rgba(58,123,213,0.4); }
+.seat.filled.team-b { border-color: var(--team-b); box-shadow: 0 0 10px rgba(213,58,58,0.4); }
+.seat.filled.ready.team-a { border-color: rgba(58,123,213,0.3); box-shadow: none; }
+.seat.filled.ready.team-b { border-color: rgba(213,58,58,0.3); box-shadow: none; }
 .seat.disconnected { opacity: 0.55; border-style: dashed; }
-.seat-label { font-family: 'DM Mono', monospace; font-size: 0.6rem; letter-spacing: 0.1em; opacity: 0.5; text-transform: uppercase; }
-.seat-name  { font-size: 0.95rem; font-weight: 500; }
+
+/* ─── Ready button ─────────────────────────────────────────────────────────── */
+.ready-row {
+  width: 100%;
+  align-self: stretch;
+  display: flex;
+  justify-content: center;
+}
+.ready-row.hidden { display: none; }
+
+.ready-btn {
+  width: 100%;
+  padding: 0.8rem 2rem;
+  background: var(--gold);
+  color: var(--felt-dark);
+  border: none;
+  border-radius: var(--radius);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.15s, transform 0.1s, opacity 0.2s;
+  min-height: 48px;
+}
+.ready-btn:hover { background: var(--gold-light); }
+.ready-btn:active { transform: scale(0.97); }
+.ready-btn:disabled {
+  background: rgba(201,168,76,0.15);
+  color: rgba(201,168,76,0.4);
+  cursor: not-allowed;
+  transform: none;
+}
+.ready-btn.is-ready {
+  background: rgba(201,168,76,0.15);
+  color: var(--gold);
+  border: 2px solid rgba(201,168,76,0.4);
+}
+.ready-btn.is-ready:hover { background: rgba(201,168,76,0.22); }
+
+/* ─── Chat & Emoji shared ──────────────────────────────────────────────────── */
+
+/* Lobby row — two halves sitting below the ready button */
+.lobby-ce-row {
+  display: flex;
+  gap: 0.5rem;
+}
+
+/* Lobby emoji overlay — fixed, horizontally centered, same max-width as lobby-wrap */
+.lobby-emoji-overlay {
+  position: fixed;
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(480px, 95vw);
+  background: rgba(10,28,18,0.98);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius);
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  z-index: 200;
+  bottom: 0;
+}
+.lobby-emoji-overlay.hidden { display: none; }
+.lobby-ce-half {
+  flex: 1;
+  position: relative;
+}
+
+.ce-toggle-btn {
+  width: 100%;
+  padding: 0.6rem 0;
+  background: rgba(0,0,0,0.25);
+  color: var(--cream);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius);
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.85rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background 0.15s;
+  min-height: 40px;
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+}
+.ce-toggle-btn:hover { background: rgba(255,255,255,0.08); }
+.ce-toggle-btn.active { border-color: var(--gold); color: var(--gold); background: rgba(201,168,76,0.1); }
+
+/* Float panel — positioned above button, doesn't affect layout */
+.lobby-float-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: rgba(10,28,18,0.98);
+  border: 1px solid rgba(255,255,255,0.15);
+  border-radius: var(--radius);
+  overflow: hidden;
+  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  z-index: 200;
+}
+.lobby-float-panel.hidden { display: none; }
+
+/* ─── Chat messages & input (shared lobby + game) ──────────────────────────── */
+.chat-messages {
+  height: 160px;
+  overflow-y: auto;
+  padding: 0.6rem 0.7rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.82rem;
+  font-family: 'DM Sans', sans-serif;
+  scroll-behavior: smooth;
+}
+/* Custom scrollbar */
+.chat-messages::-webkit-scrollbar { width: 4px; }
+.chat-messages::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 2px; }
+
+.chat-msg {
+  display: flex;
+  gap: 0.35rem;
+  line-height: 1.35;
+  align-items: baseline;
+}
+.chat-msg-name {
+  font-weight: 700;
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-size: 0.78rem;
+}
+.chat-msg-name.team-a { color: var(--team-a); }
+.chat-msg-name.team-b { color: var(--team-b); }
+.chat-msg-text { color: var(--cream); opacity: 0.88; word-break: break-word; }
+
+.chat-input-row {
+  display: flex;
+  align-items: stretch;
+  border-top: 1px solid rgba(255,255,255,0.1);
+  min-height: 44px;
+}
+.chat-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--cream);
+  font-family: 'DM Sans', sans-serif;
+  font-size: max(16px, 0.88rem); /* prevent iOS zoom */
+  padding: 0.55rem 0.7rem;
+  -webkit-appearance: none;
+  appearance: none;
+}
+.chat-input::placeholder { color: rgba(245,238,216,0.3); }
+.chat-send-btn {
+  background: transparent;
+  border: none;
+  border-left: 1px solid rgba(255,255,255,0.1);
+  color: var(--gold);
+  padding: 0 0.85rem;
+  cursor: pointer;
+  transition: background 0.12s;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 44px;
+}
+.chat-send-btn:hover { background: rgba(201,168,76,0.12); }
+
+/* ─── Emoji grid (shared) ──────────────────────────────────────────────────── */
+.emoji-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
+  padding: 0.6rem;
+  justify-content: center;
+}
+.emoji-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  font-size: 1.6rem;
+  cursor: pointer;
+  padding: 0.25rem 0.3rem;
+  line-height: 1;
+  transition: background 0.1s, transform 0.12s;
+  min-width: 44px;
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.emoji-btn:hover { background: rgba(255,255,255,0.1); transform: scale(1.25); }
+.emoji-btn:active { transform: scale(0.92); }
+
+/* ─── In-game chat/emoji corners ───────────────────────────────────────────── */
+.game-chat-wrap, .game-emoji-wrap {
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
+  padding: 0.3rem;
+  z-index: 50;
+  overflow: visible;
+  min-width: 0;
+  position: relative;
+}
+.game-chat-wrap  { grid-area: bot-left;  align-items: flex-start; }
+.game-emoji-wrap { grid-area: bot-right; align-items: flex-end; }
+
+/* Floating message feed — appears above the chat button, fades out */
+.game-msg-feed {
+  position: fixed;
+  bottom: calc(var(--hand-strip-h) + 2.8rem);
+  left: 0.5rem;
+  width: clamp(160px, 28vw, 260px);
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  pointer-events: none;
+  z-index: 55;
+}
+.game-msg-item {
+  background: rgba(8,22,14,0.82);
+  border: 1px solid rgba(255,255,255,0.12);
+  border-radius: 8px;
+  padding: 0.3rem 0.55rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.78rem;
+  color: var(--cream);
+  word-break: break-word;
+  animation: msgFadeOut 0.4s ease 4s forwards;
+}
+.game-msg-item .chat-msg-name { font-weight: 700; font-size: 0.72rem; margin-right: 0.3rem; }
+.game-msg-item .chat-msg-name.team-a { color: var(--team-a); }
+.game-msg-item .chat-msg-name.team-b { color: var(--team-b); }
+@keyframes msgFadeOut {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+.game-ce-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: rgba(0,0,0,0.6);
+  border: 1px solid rgba(255,255,255,0.22);
+  color: var(--cream);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, transform 0.1s;
+  position: relative;
+  flex-shrink: 0;
+}
+.game-ce-btn:hover { background: rgba(0,0,0,0.82); transform: scale(1.1); }
+.game-ce-btn.active { border-color: var(--gold); color: var(--gold); background: rgba(201,168,76,0.15); }
+
+.game-ce-panel {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  background: rgba(10,28,18,0.97);
+  border: 1px solid rgba(255,255,255,0.14);
+  border-radius: var(--radius);
+  width: min(260px, 72vw);
+  overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.6);
+  z-index: 60;
+}
+.game-emoji-wrap .game-ce-panel { right: 0; }
+.game-chat-wrap  .game-ce-panel { left: 0; }
+.game-ce-panel.hidden { display: none; }
+
+/* ─── Floating emoji — JS-animated via rAF ─────────────────────────────────── */
+.floating-emoji {
+  position: fixed;
+  font-size: clamp(2rem, 6vw, 3rem);
+  pointer-events: none;
+  z-index: 300;
+  user-select: none;
+  will-change: transform, opacity;
+}
+
+/* ─── Unread dot ───────────────────────────────────────────────────────────── */
+.ce-toggle-btn.has-unread::after,
+.game-ce-btn.has-unread::after {
+  content: '';
+  position: absolute;
+  top: 3px; right: 3px;
+  width: 7px; height: 7px;
+  background: #e06f6f;
+  border-radius: 50%;
+  pointer-events: none;
+}
+
+/* ─── Chat overlay ─────────────────────────────────────────────────────────── */
+.chat-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 800;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* Radial mask: opaque in center, transparent at edges */
+  background: radial-gradient(ellipse 70% 60% at 50% 50%,
+    rgba(0,0,0,0.72) 0%,
+    rgba(0,0,0,0.55) 50%,
+    rgba(0,0,0,0.18) 80%,
+    rgba(0,0,0,0.04) 100%);
+  pointer-events: auto;
+}
+.chat-overlay.hidden { display: none; }
+
+.chat-overlay-card {
+  background: rgba(10,28,18,0.97);
+  border: 1px solid rgba(255,255,255,0.18);
+  border-radius: var(--radius);
+  width: min(400px, 90vw);
+  max-height: 70vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: 0 8px 48px rgba(0,0,0,0.7);
+  animation: chatOverlayIn 0.18s ease;
+}
+@keyframes chatOverlayIn {
+  from { opacity: 0; transform: scale(0.94) translateY(8px); }
+  to   { opacity: 1; transform: scale(1) translateY(0); }
+}
+
+.chat-overlay-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.65rem 0.9rem 0.55rem;
+  border-bottom: 1px solid rgba(255,255,255,0.1);
+}
+.chat-overlay-title {
+  font-family: 'Outfit', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--gold);
+}
+.chat-overlay-close {
+  background: transparent;
+  border: none;
+  color: rgba(245,238,216,0.55);
+  font-size: 1.4rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0 0.2rem;
+  transition: color 0.12s;
+}
+.chat-overlay-close:hover { color: var(--cream); }
+
+.chat-overlay .chat-messages {
+  flex: 1;
+  min-height: 0;
+  height: auto;
+  max-height: 50vh;
+}
+
+/* ─── Chat bubbles above player names ──────────────────────────────────────── */
+.chat-bubble {
+  position: fixed;
+  background: rgba(10,28,18,0.93);
+  border: 1px solid rgba(255,255,255,0.2);
+  border-radius: 10px;
+  padding: 0.35rem 0.6rem;
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.78rem;
+  color: var(--cream);
+  white-space: normal;
+  word-break: break-word;
+  box-shadow: 0 2px 12px rgba(0,0,0,0.5);
+  pointer-events: none;
+  z-index: 60;
+  animation: bubbleFade 0.5s ease 3.5s forwards;
+}
+/* Tail triangle — border outline, then fill on top */
+.chat-bubble::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  border: 6px solid transparent;
+  border-top-color: rgba(255,255,255,0.2);
+}
+.chat-bubble::before {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%) translateY(-1px);
+  border: 5px solid transparent;
+  border-top-color: rgba(10,28,18,0.93);
+  z-index: 1;
+}
+@keyframes bubbleFade {
+  from { opacity: 1; }
+  to   { opacity: 0; }
+}
+
+
+/* ─────────────────────────────────────────────────────────────────────────── */
+
+.seat-label {
+  font-family: 'DM Mono', monospace;
+  font-size: 0.58rem;
+  letter-spacing: 0.1em;
+  opacity: 0.5;
+  text-transform: uppercase;
+}
+.seat-name {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--cream);
+}
+/* "Click to join" hint shown only on available empty seats */
+.seat-join-hint {
+  font-size: 0.72rem;
+  font-weight: 500;
+  margin-top: 0.15rem;
+  transition: opacity 0.15s;
+}
+.seat.available .seat-join-hint { display: block; opacity: 0.65; }
+.seat:not(.available) .seat-join-hint { display: none; }
+.seat.available.team-a .seat-join-hint { color: var(--team-a); }
+.seat.available.team-b .seat-join-hint { color: var(--team-b); }
 
 /* ─── Seat popover ─────────────────────────────────────────────────────────── */
 .seat-popover {
@@ -227,11 +701,84 @@ button, .card.playable {
   color: var(--cream);
   transition: background 0.12s;
 }
+.seat-popover-swap {
+  color: var(--gold);
+  border-color: rgba(201,168,76,0.3);
+}
+.seat-popover-swap:hover { background: rgba(201,168,76,0.1); }
 .seat-popover-remove {
   color: #e06f6f;
   border-color: rgba(224,111,111,0.25);
 }
 .seat-popover-remove:hover { background: rgba(224,111,111,0.12); }
+
+/* ─── Swap request overlay ─────────────────────────────────────────────────── */
+.swap-request-bar {
+  position: fixed;
+  inset: 0;
+  z-index: 80;
+  background: transparent;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  padding-top: 18vh;
+  pointer-events: none;
+}
+.swap-request-bar.hidden { display: none; }
+
+/* The card itself gets pointer-events back */
+.swap-request-card {
+  pointer-events: auto;
+  background: linear-gradient(160deg, #1e3a27 0%, #112318 100%);
+  border: 1px solid var(--gold);
+  border-radius: 12px;
+  padding: 1.5rem 2rem;
+  text-align: center;
+  display: flex;
+  flex-direction: column;
+  gap: 1.1rem;
+  box-shadow: 0 20px 60px rgba(0,0,0,0.7);
+  width: min(360px, 90vw);
+  animation: swapCardIn 0.2s ease;
+}
+@keyframes swapCardIn {
+  from { opacity: 0; transform: translateY(-12px) scale(0.97); }
+  to   { opacity: 1; transform: translateY(0)   scale(1); }
+}
+
+.swap-request-title {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(1.2rem, 4vw, 1.6rem);
+  color: var(--gold);
+}
+
+.swap-request-btns { display: flex; gap: 0.6rem; justify-content: center; }
+
+.swap-accept-btn, .swap-decline-btn {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 700;
+  padding: 0.6rem 1.4rem;
+  border-radius: var(--radius);
+  cursor: pointer;
+  border: none;
+  transition: background 0.12s, transform 0.1s;
+  min-height: 44px;
+}
+.swap-accept-btn {
+  background: var(--gold);
+  color: var(--felt-dark);
+}
+.swap-accept-btn:hover { background: var(--gold-light); }
+.swap-accept-btn:active { transform: scale(0.97); }
+.swap-decline-btn {
+  background: transparent;
+  color: #e06f6f;
+  border: 2px solid rgba(224,111,111,0.4);
+}
+.swap-decline-btn:hover { background: rgba(224,111,111,0.1); }
+.swap-decline-btn:active { transform: scale(0.97); }
 
 .team-note {
   margin-top: 0.7rem;
@@ -322,18 +869,6 @@ button, .card.playable {
   opacity: 0.9;
   gap: 0.1rem;
 }
-.bid-tag {
-  font-family: 'DM Sans', sans-serif;
-  font-size: clamp(0.68rem, 1.6vw, 0.8rem);
-  font-weight: 600;
-  color: var(--gold);
-  white-space: nowrap;
-  background: rgba(10, 28, 18, 0.88);
-  border: 1px solid rgba(201, 168, 76, 0.35);
-  border-radius: 3px;
-  padding: 1px 6px;
-}
-.bid-tag.hidden { display: none; }
 
 /* Settings button in scorebar center */
 .settings-btn {
@@ -480,9 +1015,9 @@ button, .card.playable {
   min-height: 0;
   display: grid;
   grid-template-areas:
-    ".     across  ."
-    "left  center  right"
-    ".     self    .";
+    ".        across  ."
+    "left     center  right"
+    "bot-left self    bot-right";
   grid-template-columns: clamp(44px, 10vw, 90px) 1fr clamp(44px, 10vw, 90px);
   grid-template-rows: clamp(72px, calc(2rem + var(--card-h-sm) + 10px), calc(3rem + var(--card-h-sm) * 2 + 6px)) 1fr var(--hand-strip-h);
   gap: 0.25rem;
@@ -580,9 +1115,9 @@ button, .card.playable {
   line-height: 1;
   letter-spacing: -0.02em;
 }
-/* ROOK text needs to be smaller so all four letters fit */
+/* ROOK text scales with card width so it never overflows */
 .card.suit-rook .card-number {
-  font-size: clamp(0.85rem, 2.4vw, 1.15rem);
+  font-size: calc(var(--card-w) * 0.22);
   letter-spacing: 0.04em;
 }
 .card .card-corner {
@@ -768,6 +1303,21 @@ button, .card.playable {
 .trump-indicator.trump-green  { color: #4caf50; }
 .trump-indicator.trump-none   { color: var(--gold); }
 
+.bid-winner-indicator {
+  font-family: 'DM Sans', sans-serif;
+  font-size: clamp(0.82rem, 2vw, 1rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  padding: 3px 12px;
+  border-radius: 12px;
+  background: rgba(0,0,0,0.35);
+  border: 1.5px solid var(--gold);
+  color: var(--gold);
+  min-height: 24px;
+  text-align: center;
+}
+.bid-winner-indicator:empty { display: none; }
+
 
 /* ─── Kitty card display ───────────────────────────────────────────────────── */
 .kitty-display {
@@ -847,7 +1397,7 @@ button, .card.playable {
 /* ── Bid history scrollable log ── */
 .bid-history {
   width: 100%;
-  max-height: clamp(80px, 18vh, 130px);
+  max-height: clamp(120px, 28vh, 220px);
   overflow-y: auto;
   display: flex;
   flex-direction: column;
@@ -1019,6 +1569,86 @@ button, .card.playable {
   opacity: 0.85;
 }
 
+/* ─── Sweep banner ─────────────────────────────────────────────────────────── */
+.sweep-banner {
+  position: fixed;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%) scale(0.75);
+  z-index: 60;
+  background: rgba(10, 28, 18, 0.96);
+  border: 2px solid rgba(201,168,76,0.7);
+  border-radius: var(--radius);
+  padding: 0.7rem 2rem;
+  text-align: center;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 0.3s ease, transform 0.3s ease;
+}
+.sweep-banner.show {
+  opacity: 1;
+  transform: translate(-50%, -50%) scale(1);
+}
+.sweep-banner.hide {
+  opacity: 0;
+  transform: translate(-50%, -50%) scale(0.85);
+  transition: opacity 0.4s ease, transform 0.4s ease;
+}
+.sweep-title {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(1.3rem, 4.5vw, 1.8rem);
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+/* ─── Bid won banner ───────────────────────────────────────────────────────── */
+.bid-won-banner {
+  position: fixed;
+  z-index: 70;
+  pointer-events: none;
+  text-align: center;
+  background: rgba(10, 28, 18, 0.96);
+  border: 2px solid rgba(201,168,76,0.6);
+  border-radius: 14px;
+  padding: 1.1rem 2.5rem;
+  box-shadow: 0 12px 48px rgba(0,0,0,0.7);
+  min-width: 200px;
+  /* position set by JS; transitions driven by JS too */
+  transition: top 0.45s cubic-bezier(0.4,0,0.2,1),
+              left 0.45s cubic-bezier(0.4,0,0.2,1),
+              width 0.45s cubic-bezier(0.4,0,0.2,1),
+              height 0.45s cubic-bezier(0.4,0,0.2,1),
+              border-radius 0.45s cubic-bezier(0.4,0,0.2,1),
+              opacity 0.35s ease,
+              transform 0.45s cubic-bezier(0.4,0,0.2,1);
+}
+.bid-won-banner.bid-won-team-a { border-color: var(--team-a); box-shadow: 0 12px 48px rgba(58,123,213,0.35); }
+.bid-won-banner.bid-won-team-b { border-color: var(--team-b); box-shadow: 0 12px 48px rgba(213,58,58,0.35); }
+
+.bid-won-name {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(1.3rem, 4vw, 1.8rem);
+  font-weight: 700;
+  color: var(--cream);
+  line-height: 1.1;
+}
+.bid-won-label {
+  font-family: 'DM Mono', monospace;
+  font-size: clamp(0.6rem, 2vw, 0.7rem);
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--gold);
+  opacity: 0.8;
+  margin: 0.2rem 0;
+}
+.bid-won-amount {
+  font-family: 'Playfair Display', serif;
+  font-size: clamp(2rem, 7vw, 3rem);
+  font-weight: 900;
+  color: var(--gold);
+  line-height: 1;
+}
+
 /* ─── Toast ────────────────────────────────────────────────────────────────── */
 .toast {
   position: fixed;
@@ -1105,11 +1735,6 @@ button, .card.playable {
   cursor: default;
 }
 
-/* Hide bid tag during redeal-vote so it doesn't overlap the cards */
-.phase-redeal-vote .bid-tag {
-  display: none !important;
-}
-
 /* Action panel in redeal-vote: constrained width leaves room for side columns,
    but wide enough for readable text — min 200px, up to 40% of viewport */
 .phase-redeal-vote .action-panel.panel-kitty {
@@ -1151,11 +1776,89 @@ button, .card.playable {
 }
 .redeal-vote-confirmed.hidden { display: none; }
 
-/* ─── Active player glow ───────────────────────────────────────────────────── */
-.player-zone.active-turn .player-name::before {
-  content: '▶ ';
+/* ─── Nudge popover ────────────────────────────────────────────────────────── */
+.nudge-popover {
+  position: fixed;
+  z-index: 100;
+  background: #0e2318;
+  border: 1px solid rgba(201,168,76,0.35);
+  border-radius: var(--radius);
+  box-shadow: 0 8px 28px rgba(0,0,0,0.55);
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-width: 140px;
+  align-items: center;
+}
+.nudge-popover.hidden { display: none; }
+
+.nudge-popover-name {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--cream);
+  text-align: center;
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid rgba(255,255,255,0.08);
+  width: 100%;
+}
+
+.nudge-popover-btn {
+  font-family: 'DM Sans', sans-serif;
+  font-size: 0.82rem;
+  font-weight: 600;
+  padding: 0.38rem 0.9rem;
+  border-radius: 5px;
+  border: 1px solid rgba(201,168,76,0.45);
+  cursor: pointer;
+  background: transparent;
   color: var(--gold);
-  font-size: 0.7em;
+  transition: background 0.12s;
+  width: 100%;
+}
+.nudge-popover-btn:hover { background: rgba(201,168,76,0.12); }
+.nudge-popover-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Opponent names are clickable in-game */
+#across-name, #left-name, #right-name {
+  cursor: pointer;
+}
+#across-name:hover, #left-name:hover, #right-name:hover {
+  opacity: 0.75;
+}
+
+/* Nudge pulse — flashes on the nudged player's name */
+@keyframes cardShake {
+  0%   { transform: translateX(0); }
+  20%  { transform: translateX(-6px) rotate(-2deg); }
+  40%  { transform: translateX(6px)  rotate(2deg); }
+  60%  { transform: translateX(-5px) rotate(-1deg); }
+  80%  { transform: translateX(4px)  rotate(1deg); }
+  100% { transform: translateX(0); }
+}
+.card.invalid-play {
+  animation: cardShake 0.35s ease;
+  border-color: #e06f6f !important;
+  box-shadow: 0 0 10px rgba(224,111,111,0.7) !important;
+}
+
+@keyframes nudgePulse {
+  0%   { text-shadow: 0 0 8px rgba(201,168,76,0.9), 0 0 24px rgba(201,168,76,0.6); color: var(--gold); }
+  50%  { text-shadow: 0 0 20px rgba(201,168,76,1),  0 0 48px rgba(201,168,76,0.8); color: #ffe07a; }
+  100% { text-shadow: 0 0 8px rgba(201,168,76,0.9), 0 0 24px rgba(201,168,76,0.6); color: var(--gold); }
+}
+.nudge-flash {
+  animation: nudgePulse 0.6s ease-in-out 4;
+}
+
+/* ─── Active player glow ───────────────────────────────────────────────────── */
+.player-zone.active-turn .player-name {
+  color: var(--gold);
+  text-shadow: 0 0 10px rgba(201,168,76,0.7), 0 0 24px rgba(201,168,76,0.35);
 }
 
 /* ─── Winning seat highlight ───────────────────────────────────────────────── */
@@ -1258,6 +1961,7 @@ button, .card.playable {
   flex-shrink: 0;
 }
 .trick-holding .card .card-number { font-size: clamp(0.7rem, 2vw, 0.95rem); }
+.trick-holding .card.suit-rook .card-number { font-size: clamp(6px, 1.2vw, 9px); }
 .trick-holding .card .card-corner { font-size: clamp(0.32rem, 0.9vw, 0.44rem); }
 
 /* Player name label under each card */
@@ -1409,8 +2113,6 @@ button, .card.playable {
   /* Tighter scorebar — hide team name labels, just show numbers */
   .score-label { display: none; }
 
-  /* Hide the bid tag next to "you" in the self zone — bid shown in scorebar */
-  #self-bid { display: none !important; }
 
   /* Tighten the self header so it doesn't eat into card space */
   .self-info { margin-bottom: 0; }
@@ -1419,11 +2121,6 @@ button, .card.playable {
   /* Reduce hand-scroll top padding on mobile */
   .hand-scroll { padding-top: 8px; }
 
-  /* Bid tag next to player names: smaller so it doesn't push layout */
-  .bid-tag {
-    font-size: 0.62rem;
-    padding: 1px 4px;
-  }
 
   /* Player name text: slightly smaller on phone */
   .player-name { font-size: clamp(0.75rem, 3.5vw, 0.95rem); }
@@ -1452,17 +2149,10 @@ button, .card.playable {
     padding: 0;
     font-size: 0.6rem;
   }
-  /* Bid tag in side zones: also vertical */
-  .left-zone .bid-tag,
-  .right-zone .bid-tag {
-    writing-mode: vertical-rl;
-    font-size: 0.58rem;
-    padding: 3px 1px;
-  }
 
   /* Compress the bid history log so it doesn't eat up all center space */
   .bid-history {
-    max-height: clamp(56px, 14vw, 88px);
+    max-height: clamp(90px, 22vw, 150px);
   }
 
   /* Make bid log rows tighter */
@@ -1513,6 +2203,7 @@ button, .card.playable {
     height: clamp(50px, 12.5vw, var(--card-h));
   }
   .trick-slot .card .card-number { font-size: clamp(1.1rem, 5vw, 1.6rem); }
+  .trick-slot .card.suit-rook .card-number { font-size: clamp(9px, 2.5vw, 13px); }
 
   /* Trump indicator: smaller pill */
   .trump-indicator {

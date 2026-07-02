@@ -25,6 +25,8 @@ const engine = new GameEngine();
 
 // Pending undo request: { requestingSeat, approvals: Set of seat indices }
 let pendingUndo = null;
+let pendingUndoBid = null;
+let pendingSwap = null;
 
 // Per-seat reconnect timers: if a player doesn't come back within TIMEOUT_MS
 // we free their seat so someone else can join.
@@ -43,7 +45,7 @@ function seatBySocketId(id) {
 
 function lobbyPayload() {
   return {
-    players: seats.map(s => ({ name: s.name, seat: s.seat, connected: s.id !== null })),
+    players: seats.map(s => ({ name: s.name, seat: s.seat, connected: s.id !== null, ready: !!s.ready })),
     full: seats.length === 4,
   };
 }
@@ -115,7 +117,7 @@ io.on('connection', socket => {
 
   // ── Fresh join ────────────────────────────────────────────────────────────
 
-  socket.on('joinLobby', ({ name }) => {
+  socket.on('joinLobby', ({ name, preferredSeat }) => {
     if (seats.length >= 4) {
       socket.emit('error', 'Game is full');
       return;
@@ -125,18 +127,38 @@ io.on('connection', socket => {
       return;
     }
 
+    // Determine seat: use preferred if valid and open, otherwise first available
+    const takenSeats = new Set(seats.map(s => s.seat));
+    let seat;
+    if (typeof preferredSeat === 'number' && preferredSeat >= 0 && preferredSeat <= 3 && !takenSeats.has(preferredSeat)) {
+      seat = preferredSeat;
+    } else if (typeof preferredSeat === 'number') {
+      socket.emit('error', 'That seat is already taken');
+      return;
+    } else {
+      seat = [0, 1, 2, 3].find(s => !takenSeats.has(s));
+    }
+
     const token = crypto.randomBytes(16).toString('hex');
-    const seat = seats.length;
     seats.push({ token, name: String(name).slice(0, 20), seat, id: socket.id });
 
     // Send the token back so the client can store it
     socket.emit('joinedAs', { token, seat });
 
     io.emit('lobbyUpdate', lobbyPayload());
+  });
 
-    // Auto-start when 4 players have joined
-    if (seats.length === 4) {
-      const ids = seats.map(s => s.id);
+  // ── Player ready ─────────────────────────────────────────────────────────
+
+  socket.on('setReady', ({ ready }) => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot || engine.game) return;
+    slot.ready = !!ready;
+    io.emit('lobbyUpdate', lobbyPayload());
+
+    // Start when all 4 seats filled and all ready
+    if (seats.length === 4 && seats.every(s => s.ready)) {
+      const ids = [0, 1, 2, 3].map(i => seats.find(s => s.seat === i).id);
       const payload = engine.initGame(ids);
       broadcastGameState(payload);
     }
@@ -167,9 +189,85 @@ io.on('connection', socket => {
   socket.on('placeBid', ({ amount }) => {
     const slot = seatBySocketId(socket.id);
     if (!slot) return;
+    if (pendingUndoBid) {
+      for (const oppSeat of pendingUndoBid.opposingSeats) {
+        emitToSeat(oppSeat, 'undoBidCancelled', {});
+      }
+      pendingUndoBid = null;
+    }
     const result = engine.placeBid(slot.seat, amount);
     if (result.error) { socket.emit('error', result.error); return; }
     broadcastGameState(result);
+  });
+
+  // ── Undo bid request ──────────────────────────────────────────────────────
+
+  socket.on('requestUndoBid', () => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot) return;
+
+    if (pendingUndoBid) { socket.emit('error', 'An undo request is already pending'); return; }
+
+    const pub = engine.getPublicState();
+    if (pub?.phase !== 'bidding') { socket.emit('error', 'Can only undo during bidding'); return; }
+
+    const r = engine.game.round;
+    if (r.bidLog.length === 0) { socket.emit('error', 'No bid to undo'); return; }
+
+    const lastEntry = r.bidLog[r.bidLog.length - 1];
+    if (lastEntry.seat !== slot.seat) {
+      socket.emit('error', 'You can only undo your own last bid');
+      return;
+    }
+
+    const opposingSeats = [1, 3].includes(slot.seat) ? [0, 2] : [1, 3];
+    pendingUndoBid = { requestingSeat: slot.seat, approvals: new Set(), opposingSeats };
+
+    const bidAmount = lastEntry.amount;
+    for (const oppSeat of opposingSeats) {
+      emitToSeat(oppSeat, 'undoBidRequest', {
+        requesterName: slot.name,
+        bidAmount,
+        requestingSeat: slot.seat,
+      });
+    }
+
+    socket.emit('undoBidPending', { message: 'Undo request sent — waiting for opponents to approve' });
+  });
+
+  // ── Undo bid response (approve or deny) ───────────────────────────────────
+
+  socket.on('respondUndoBid', ({ approve }) => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot || !pendingUndoBid) return;
+
+    if (!pendingUndoBid.opposingSeats.includes(slot.seat)) {
+      socket.emit('error', 'You are not a reviewer for this undo request');
+      return;
+    }
+
+    if (!approve) {
+      const requesterSlot = seats.find(s => s.seat === pendingUndoBid.requestingSeat);
+      if (requesterSlot?.id) {
+        io.to(requesterSlot.id).emit('undoBidDenied', { denierName: slot.name });
+      }
+      for (const oppSeat of pendingUndoBid.opposingSeats) {
+        emitToSeat(oppSeat, 'undoBidCancelled', {});
+      }
+      pendingUndoBid = null;
+      return;
+    }
+
+    pendingUndoBid.approvals.add(slot.seat);
+
+    if (pendingUndoBid.approvals.size === pendingUndoBid.opposingSeats.length) {
+      const result = engine.undoLastBid(pendingUndoBid.requestingSeat);
+      pendingUndoBid = null;
+      if (result.error) { socket.emit('error', result.error); return; }
+      broadcastGameState(result);
+    } else {
+      emitToSeat(slot.seat, 'undoBidApprovedWaiting', {});
+    }
   });
 
   // ── Kitty: discard + declare trump ────────────────────────────────────────
@@ -303,11 +401,73 @@ io.on('connection', socket => {
     }
 
     // Tell the removed player's socket to reset (if still connected)
-    if (slot.id) io.to(slot.id).emit('seatRemoved');
+    const self = slot.id === socket.id;
+    if (slot.id) io.to(slot.id).emit('seatRemoved', { self });
 
     seats.splice(idx, 1);
-    // Re-index remaining seats so they stay 0-based and contiguous
-    seats.forEach((s, i) => { s.seat = i; });
+
+    io.emit('lobbyUpdate', lobbyPayload());
+  });
+
+  // ── Move self to an empty seat ────────────────────────────────────────────
+
+  socket.on('moveSeat', ({ newSeat }) => {
+    if (engine.game) { socket.emit('error', 'Cannot move seats mid-game'); return; }
+    const slot = seatBySocketId(socket.id);
+    if (!slot) return;
+    if (typeof newSeat !== 'number' || newSeat < 0 || newSeat > 3) return;
+    if (seats.some(s => s.seat === newSeat)) {
+      socket.emit('error', 'That seat is already taken');
+      return;
+    }
+    slot.seat = newSeat;
+    slot.ready = false;
+    socket.emit('joinedAs', { token: slot.token, seat: newSeat });
+    io.emit('lobbyUpdate', lobbyPayload());
+  });
+
+  // ── Swap seats with another player (requires approval) ───────────────────
+
+  socket.on('requestSwap', ({ targetSeat }) => {
+    if (engine.game) { socket.emit('error', 'Cannot swap seats mid-game'); return; }
+    const requester = seatBySocketId(socket.id);
+    if (!requester) return;
+    if (typeof targetSeat !== 'number') return;
+    const target = seats.find(s => s.seat === targetSeat);
+    if (!target) { socket.emit('error', 'That seat is empty'); return; }
+    pendingSwap = { requesterSeat: requester.seat, targetSeat };
+    emitToSeat(targetSeat, 'swapRequest', { fromName: requester.name, fromSeat: requester.seat });
+  });
+
+  socket.on('respondSwap', ({ accept }) => {
+    if (!pendingSwap) return;
+    const target = seatBySocketId(socket.id);
+    if (!target || target.seat !== pendingSwap.targetSeat) return;
+    const requester = seats.find(s => s.seat === pendingSwap.requesterSeat);
+    const { requesterSeat, targetSeat } = pendingSwap;
+    pendingSwap = null;
+
+    if (!accept) {
+      if (requester) emitToSeat(requesterSeat, 'swapDenied', { targetName: target.name });
+      return;
+    }
+
+    // Capture socket IDs before mutating seat numbers
+    const requesterSocketId = requester?.id;
+    const targetSocketId = target.id;
+
+    // Perform the swap (also clears ready — you picked a new seat)
+    if (requester) { requester.seat = targetSeat; requester.ready = false; }
+    target.seat = requesterSeat; target.ready = false;
+
+    if (requesterSocketId) {
+      io.to(requesterSocketId).emit('joinedAs', { token: requester.token, seat: targetSeat });
+      io.to(requesterSocketId).emit('swapDone', { newSeat: targetSeat });
+    }
+    if (targetSocketId) {
+      io.to(targetSocketId).emit('joinedAs', { token: target.token, seat: requesterSeat });
+      io.to(targetSocketId).emit('swapDone', { newSeat: requesterSeat });
+    }
 
     io.emit('lobbyUpdate', lobbyPayload());
   });
@@ -328,8 +488,48 @@ io.on('connection', socket => {
     seats.splice(0, seats.length);
     engine.game = null;
     pendingUndo = null;
+    pendingUndoBid = null;
 
     io.emit('gameReset');
+  });
+
+  // ── Nudge ─────────────────────────────────────────────────────────────────
+
+  socket.on('nudge', ({ targetSeat }) => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot) return;
+    if (typeof targetSeat !== 'number') return;
+    const targetSlot = seats.find(s => s.seat === targetSeat);
+    if (!targetSlot?.id) return;
+    // Re-send full game state to unstick their page, then send the nudge notification
+    const pub = engine.getPublicState();
+    if (pub && engine.game) {
+      io.to(targetSlot.id).emit('gameState', {
+        ...pub,
+        yourSeat: targetSlot.seat,
+        yourHand: engine.getHandFor(targetSlot.seat),
+        playerNames: seats.map(sl => ({ seat: sl.seat, name: sl.name, connected: sl.id !== null })),
+      });
+    }
+    emitToSeat(targetSeat, 'nudged', { fromName: slot.name });
+  });
+
+  // ── Chat ──────────────────────────────────────────────────────────────────
+
+  socket.on('chatMessage', ({ text }) => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot) return;
+    const clean = String(text).trim().slice(0, 200);
+    if (!clean) return;
+    io.emit('chatMessage', { name: slot.name, text: clean, seat: slot.seat });
+  });
+
+  socket.on('sendEmoji', ({ emoji }) => {
+    const slot = seatBySocketId(socket.id);
+    if (!slot) return;
+    const ALLOWED = ['😂','❤️','👍','🔥','😭','🤦','😤','🎉','👀','💀'];
+    if (!ALLOWED.includes(emoji)) return;
+    io.emit('floatEmoji', { emoji, name: slot.name, seat: slot.seat });
   });
 
   // ── Next round ────────────────────────────────────────────────────────────

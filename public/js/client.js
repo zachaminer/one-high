@@ -20,7 +20,11 @@ let pendingFly = null;
 let overlayShownForPhase = null;
 
 // Undo state
-let undoPending = false;  // I sent an undo request, waiting on opponents
+let undoPending = false;    // I sent an undo request, waiting on opponents
+let undoBidPending = false; // I sent a bid undo request, waiting on opponents
+
+// Last card attempted (for invalid-play shake feedback)
+let lastAttemptedCard = null;
 
 // Redeal vote state
 let myRedealVoteCast = false;
@@ -96,6 +100,7 @@ function buildCardBack(vertical = false) {
 
 let sortNumDir  = 'asc';
 let sortSuitDir = 'asc';
+let fixedSuitOrder = null; // locked suit order; null means recompute on next sort
 
 function cardRank(card) {
   if (card.id === 'Rook') return 0;
@@ -104,23 +109,26 @@ function cardRank(card) {
   return card.number;
 }
 
-function sortHand(hand) {
-  const trumpSuit = gameState?.round?.trumpSuit;
-
+function computeSuitOrder(hand) {
   const suitCounts = {};
   for (const card of hand) {
-    const bucket = (trumpSuit && trumpSuit !== 'NoTrump' && card.id === 'Rook')
-      ? trumpSuit : card.suit;
-    suitCounts[bucket] = (suitCounts[bucket] || 0) + 1;
+    if (card.suit !== 'Rook') suitCounts[card.suit] = (suitCounts[card.suit] || 0) + 1;
   }
-
   const SUIT_ORDER = ['Red', 'Black', 'Yellow', 'Green'];
-  const nonRookSuits = [...new Set(hand.map(c => c.suit).filter(s => s !== 'Rook'))];
-  nonRookSuits.sort((a, b) => {
+  const suits = [...new Set(hand.map(c => c.suit).filter(s => s !== 'Rook'))];
+  suits.sort((a, b) => {
     const diff = (suitCounts[a] || 0) - (suitCounts[b] || 0);
     return diff !== 0 ? (sortSuitDir === 'asc' ? diff : -diff)
                       : SUIT_ORDER.indexOf(a) - SUIT_ORDER.indexOf(b);
   });
+  return suits;
+}
+
+function sortHand(hand) {
+  const trumpSuit = gameState?.round?.trumpSuit;
+
+  if (!fixedSuitOrder) fixedSuitOrder = computeSuitOrder(hand);
+  const nonRookSuits = fixedSuitOrder;
 
   function cardSuitIndex(card) {
     if (card.id === 'Rook') {
@@ -151,50 +159,85 @@ function applySortButtons() {
 
 const lobbyScreen = document.getElementById('lobby-screen');
 const gameScreen  = document.getElementById('game-screen');
-const joinBtn     = document.getElementById('join-btn');
 const nameInput   = document.getElementById('name-input');
-
-joinBtn.addEventListener('click', joinGame);
-nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') joinGame(); });
 
 const savedToken = sessionStorage.getItem('oneHighToken');
 if (savedToken) {
-  joinBtn.disabled = true;
   nameInput.disabled = true;
   nameInput.placeholder = 'Reconnecting…';
   socket.emit('rejoinLobby', { token: savedToken });
 }
 
-function joinGame() {
+function joinSeat(preferredSeat) {
   const name = nameInput.value.trim();
   if (!name) { toast('Enter your name first'); return; }
   myName = name;
-  socket.emit('joinLobby', { name });
-  joinBtn.disabled = true;
+  nameInput.disabled = true;
+  socket.emit('joinLobby', { name, preferredSeat });
+}
+
+for (let i = 0; i < 4; i++) {
+  document.getElementById(`seat-${i}`).addEventListener('click', function () {
+    if (this.classList.contains('filled')) {
+      if (seatPopoverTarget === i) { closeSeatPopover(); return; }
+      openSeatPopover(i, this.querySelector('.seat-name').textContent, this);
+    } else if (this.classList.contains('available')) {
+      if (mySeat !== null) {
+        // Already seated — move to empty seat
+        socket.emit('moveSeat', { newSeat: i });
+      } else {
+        joinSeat(i);
+      }
+    }
+  });
 }
 
 socket.on('joinedAs', ({ token, seat }) => {
   sessionStorage.setItem('oneHighToken', token);
   mySeat = seat;
+  updateReadyBtn(false);
 });
+
+function updateReadyBtn(isReady) {
+  const btn = document.getElementById('ready-btn');
+  const hasName = !!(nameInput.value.trim() || myName);
+  btn.textContent = isReady ? 'Ready ✓' : 'Ready';
+  btn.classList.toggle('is-ready', isReady);
+  btn.disabled = !hasName || mySeat === null;
+}
+
+nameInput.addEventListener('input', () => updateReadyBtn(false));
 
 socket.on('rejoinFailed', () => {
   sessionStorage.removeItem('oneHighToken');
-  joinBtn.disabled = false;
   nameInput.disabled = false;
   nameInput.placeholder = 'Your name';
 });
 
 socket.on('lobbyUpdate', ({ players }) => {
+  const alreadySeated = !!sessionStorage.getItem('oneHighToken');
   for (let i = 0; i < 4; i++) {
     const p = players.find(p => p.seat === i);
     const el = document.getElementById(`seat-${i}`);
+    const isMyOwnSeat = alreadySeated && mySeat === i;
+    const isAvailable = !p && !isMyOwnSeat;
     el.querySelector('.seat-name').textContent = p
       ? (p.connected ? p.name : `${p.name} (away)`)
-      : '—';
+      : '';
+    const hint = el.querySelector('.seat-join-hint');
+    if (hint) hint.textContent = alreadySeated ? 'Switch seat' : 'Click to join';
     el.classList.toggle('filled', !!p);
+    el.classList.toggle('ready', !!(p && p.ready));
     el.classList.toggle('disconnected', !!(p && !p.connected));
+    el.classList.toggle('available', isAvailable);
   }
+
+  // Sync ready button state with server (e.g. after swap resets ready)
+  if (alreadySeated) {
+    const me = players.find(p => p.seat === mySeat);
+    updateReadyBtn(!!(me && me.ready));
+  }
+
   closeSeatPopover();
 });
 
@@ -210,10 +253,24 @@ function closeSeatPopover() {
 function openSeatPopover(seatIndex, playerName, anchorEl) {
   seatPopoverTarget = seatIndex;
   document.getElementById('seat-popover-name').textContent = playerName;
-  document.getElementById('seat-popover-remove').onclick = () => {
+  const removeBtn = document.getElementById('seat-popover-remove');
+  removeBtn.textContent = seatIndex === mySeat ? 'Leave seat' : 'Remove player';
+  removeBtn.onclick = () => {
     socket.emit('removeSeat', { seatIndex });
     closeSeatPopover();
   };
+
+  const swapBtn = document.getElementById('seat-popover-swap');
+  if (mySeat !== null && mySeat !== seatIndex) {
+    swapBtn.style.display = '';
+    swapBtn.onclick = () => {
+      socket.emit('requestSwap', { targetSeat: seatIndex });
+      closeSeatPopover();
+      toast('Swap request sent — waiting for approval…');
+    };
+  } else {
+    swapBtn.style.display = 'none';
+  }
 
   const popover = document.getElementById('seat-popover');
   popover.classList.remove('hidden');
@@ -229,14 +286,6 @@ function openSeatPopover(seatIndex, playerName, anchorEl) {
   popover.style.top  = `${top}px`;
 }
 
-for (let i = 0; i < 4; i++) {
-  document.getElementById(`seat-${i}`).addEventListener('click', function () {
-    if (!this.classList.contains('filled')) return;
-    if (seatPopoverTarget === i) { closeSeatPopover(); return; }
-    openSeatPopover(i, this.querySelector('.seat-name').textContent, this);
-  });
-}
-
 document.addEventListener('click', (e) => {
   const popover = document.getElementById('seat-popover');
   if (popover.classList.contains('hidden')) return;
@@ -244,14 +293,114 @@ document.addEventListener('click', (e) => {
   closeSeatPopover();
 }, { capture: true });
 
-socket.on('seatRemoved', () => {
+document.getElementById('ready-btn').addEventListener('click', () => {
+  const btn = document.getElementById('ready-btn');
+  const nowReady = !btn.classList.contains('is-ready');
+  socket.emit('setReady', { ready: nowReady });
+});
+
+socket.on('seatRemoved', ({ self } = {}) => {
   sessionStorage.removeItem('oneHighToken');
   mySeat = null;
-  joinBtn.disabled = false;
   nameInput.disabled = false;
   nameInput.placeholder = 'Your name';
   nameInput.value = '';
-  toast('You were removed from your seat');
+  updateReadyBtn(false);
+  toast(self ? 'You left your seat' : 'You were removed from your seat');
+});
+
+// Incoming swap request — show compact bar (keeps seats visible)
+socket.on('swapRequest', ({ fromName, fromSeat }) => {
+  const bar = document.getElementById('swap-request-bar');
+  document.getElementById('swap-request-label').textContent = `${fromName} wants to swap seats`;
+  document.getElementById('swap-accept-btn').onclick = () => {
+    socket.emit('respondSwap', { accept: true });
+    bar.classList.add('hidden');
+  };
+  document.getElementById('swap-decline-btn').onclick = () => {
+    socket.emit('respondSwap', { accept: false });
+    bar.classList.add('hidden');
+  };
+  bar.classList.remove('hidden');
+});
+
+socket.on('swapDenied', ({ targetName }) => {
+  toast(`${targetName} declined the seat swap`);
+});
+
+socket.on('swapDone', ({ newSeat }) => {
+  mySeat = newSeat;
+  document.getElementById('swap-request-bar').classList.add('hidden');
+  toast('Seats swapped!');
+});
+
+// ─── Nudge popover ───────────────────────────────────────────────────────────
+
+let nudgePopoverTarget = null;
+
+function closeNudgePopover() {
+  document.getElementById('nudge-popover').classList.add('hidden');
+  nudgePopoverTarget = null;
+}
+
+function openNudgePopover(seat, name, anchorEl) {
+  nudgePopoverTarget = seat;
+  document.getElementById('nudge-popover-name').textContent = name;
+
+  const isTheirTurn = gameState ? isThisPlayersTurn(seat, gameState) : false;
+  const btn = document.getElementById('nudge-popover-btn');
+  btn.disabled = !isTheirTurn;
+  btn.title = isTheirTurn ? '' : 'Only available on their turn';
+  btn.onclick = () => {
+    socket.emit('nudge', { targetSeat: seat });
+    closeNudgePopover();
+    toast('Nudge sent!');
+  };
+
+  const popover = document.getElementById('nudge-popover');
+  popover.classList.remove('hidden');
+
+  const rect = anchorEl.getBoundingClientRect();
+  const pw = popover.offsetWidth || 140;
+  const ph = popover.offsetHeight || 80;
+  let left = rect.left + rect.width / 2 - pw / 2;
+  let top  = rect.bottom + 6;
+  left = Math.max(8, Math.min(left, window.innerWidth  - pw - 8));
+  top  = Math.max(8, Math.min(top,  window.innerHeight - ph - 8));
+  popover.style.left = `${left}px`;
+  popover.style.top  = `${top}px`;
+}
+
+['across', 'left', 'right'].forEach(zone => {
+  document.getElementById(`${zone}-name`).addEventListener('click', function (e) {
+    if (!gameState) return;
+    const seat = ['across', 'left', 'right'].indexOf(zone);
+    // Convert zone offset to absolute seat
+    const offsets = { across: 2, left: 1, right: 3 };
+    const absSeat = (mySeat + offsets[zone]) % 4;
+    if (nudgePopoverTarget === absSeat) { closeNudgePopover(); return; }
+    openNudgePopover(absSeat, this.textContent, this);
+  });
+});
+
+document.addEventListener('click', (e) => {
+  const popover = document.getElementById('nudge-popover');
+  if (popover.classList.contains('hidden')) return;
+  if (popover.contains(e.target)) return;
+  if (['across-name', 'left-name', 'right-name'].includes(e.target.id)) return;
+  closeNudgePopover();
+}, { capture: true });
+
+socket.on('nudged', ({ fromName }) => {
+  toast(`${fromName} is nudging you — it's your turn!`);
+  // Flash the self-name element
+  const el = document.getElementById('self-name');
+  if (el) {
+    el.classList.remove('nudge-flash');
+    void el.offsetWidth; // reflow to restart animation
+    el.classList.add('nudge-flash');
+    el.addEventListener('animationend', () => el.classList.remove('nudge-flash'), { once: true });
+  }
 });
 
 // ─── Game state handler ───────────────────────────────────────────────────────
@@ -263,12 +412,22 @@ function showGame() {
 
 socket.on('gameState', (state) => {
   if (mySeat === null && state.yourSeat !== undefined) mySeat = state.yourSeat;
+  if (state.phase === 'bidding' && gameState?.phase !== 'bidding') fixedSuitOrder = null;
+
+  // Bid winner animation: bidding → kitty transition
+  if (state.phase === 'kitty' && gameState?.phase === 'bidding' && state.round?.bidWinner != null) {
+    const name = nameForSeat(state.round.bidWinner, state);
+    const amount = state.round.highBid;
+    showBidWonBanner(name, amount, state.round.bidWinner);
+  }
+
   gameState = state;
   if (state.phase !== 'playing' || !isMyTurnToPlay(state)) selectedCard = null;
   showGame();
 
   if (state.undone) {
     undoPending = false;
+    undoBidPending = false;
     removeUndoBanner();
     pendingFly = null;
     trickAnimating = false;
@@ -289,6 +448,7 @@ socket.on('gameState', (state) => {
     renderTrickCards(lastPlays);
     updatePlayerNames(state);
     updateTrumpIndicator(state);
+    updateBidWinnerIndicator(state);
     renderKittyCard(state);
     renderOpponentHands(state);
     renderMyHand(state);
@@ -323,14 +483,23 @@ socket.on('gameState', (state) => {
       removeTricksBonusBanner();
       animateTrickToPile(winTeam, state, () => {
         trickAnimating = false;
-        const prev = state.prevRoundPoints;
-        const rp = state.round?.roundPoints;
-        render(state);
-        if (prev && rp) animateRoundScore(String(prev[0]), String(prev[1]), String(rp[0]), String(rp[1]));
+        if (state.sweep) {
+          animateSweep(state, () => {
+            const prev = state.prevRoundPoints;
+            const rp = state.round?.roundPoints;
+            render(state);
+            if (prev && rp) animateRoundScore(String(prev[0]), String(prev[1]), String(rp[0]), String(rp[1]));
+          });
+        } else {
+          const prev = state.prevRoundPoints;
+          const rp = state.round?.roundPoints;
+          render(state);
+          if (prev && rp) animateRoundScore(String(prev[0]), String(prev[1]), String(rp[0]), String(rp[1]));
+        }
       });
     }, 2500);
 
-  } else if (pendingFly && state.phase === 'playing' && (state.round?.currentTrick?.length ?? 0) >= 1) {
+  } else if (pendingFly && (state.round?.currentTrick?.length ?? 0) >= 1) {
     // A new card was played before the 2.5s timer fired — skip straight to pile immediately
     const { winTeam } = pendingFly;
     pendingFly = null;
@@ -356,7 +525,23 @@ socket.on('playerLeft', ({ name }) => {
   });
 });
 
-socket.on('error', msg => toast('⚠ ' + msg));
+const PLAY_ERRORS = new Set(['You must follow suit', 'Not your turn', 'Card not in your hand']);
+
+socket.on('error', msg => {
+  toast('⚠ ' + msg);
+  if (PLAY_ERRORS.has(msg) && lastAttemptedCard) {
+    const el = document.querySelector(`#my-hand [data-card-id="${lastAttemptedCard}"]`);
+    if (el) {
+      el.classList.remove('invalid-play');
+      void el.offsetWidth; // force reflow so animation restarts if triggered twice
+      el.classList.add('invalid-play');
+      el.addEventListener('animationend', () => el.classList.remove('invalid-play'), { once: true });
+    }
+    selectedCard = lastAttemptedCard; // re-select so they can try again
+    if (gameState) renderMyHand(gameState);
+  }
+  lastAttemptedCard = null;
+});
 
 // ─── Main render ──────────────────────────────────────────────────────────────
 
@@ -364,6 +549,7 @@ function render(state) {
   updateScorebar(state);
   updatePlayerNames(state);
   updateTrumpIndicator(state);
+  updateBidWinnerIndicator(state);
   updateTrickCounts(state);
   renderTrick(state);
   renderKittyCard(state);
@@ -399,15 +585,6 @@ function updateScorebar(state) {
       [nameOf(1), nameOf(3)].filter(Boolean).join(' & ') || 'Team B';
   }
 
-  ['self', 'across', 'left', 'right'].forEach(zone => {
-    document.getElementById(`${zone}-bid`)?.classList.add('hidden');
-  });
-  const r = state.round;
-  if (r?.highBid > 0 && r.highBidder !== null) {
-    const pos = relativePosition(r.highBidder);
-    const el = document.getElementById(`${pos}-bid`);
-    if (el) { el.textContent = `Bid: ${r.highBid}`; el.classList.remove('hidden'); }
-  }
 }
 
 function updatePlayerNames(state) {
@@ -455,6 +632,78 @@ function updateTrumpIndicator(state) {
   if (ts) {
     el.textContent = ts === 'NoTrump' ? 'No Trump' : `Trump: ${ts}`;
     el.classList.add(TRUMP_SUIT_CLASS[ts] ?? '');
+  } else {
+    el.textContent = '';
+  }
+}
+
+function showBidWonBanner(name, amount, seat) {
+  const existing = document.getElementById('bid-won-banner');
+  if (existing) existing.remove();
+
+  const teamClass = (seat % 2 === 0) ? 'bid-won-team-a' : 'bid-won-team-b';
+  const banner = document.createElement('div');
+  banner.id = 'bid-won-banner';
+  banner.className = `bid-won-banner ${teamClass}`;
+  banner.innerHTML = `
+    <div class="bid-won-name">${name}</div>
+    <div class="bid-won-label">took the bid</div>
+    <div class="bid-won-amount">${amount}</div>
+  `;
+
+  // Disable transitions for initial placement
+  banner.style.transition = 'none';
+  banner.style.opacity = '0';
+  banner.style.transform = 'scale(0.75)';
+  document.body.appendChild(banner);
+
+  // Measure and center after append so offsetWidth/Height are real
+  const bw = banner.offsetWidth;
+  const bh = banner.offsetHeight;
+  banner.style.left = (window.innerWidth  / 2 - bw / 2) + 'px';
+  banner.style.top  = (window.innerHeight / 2 - bh / 2) + 'px';
+
+  // Reflow, then animate in
+  void banner.offsetWidth;
+  banner.style.transition = '';  // restore CSS transitions
+  banner.style.opacity = '1';
+  banner.style.transform = 'scale(1)';
+
+  // After hold, fly to pill by animating center-to-center + scale
+  setTimeout(() => {
+    const pill = document.getElementById('bid-winner-indicator');
+    if (!pill) { banner.remove(); return; }
+
+    const pillRect   = pill.getBoundingClientRect();
+    const bannerRect = banner.getBoundingClientRect();
+
+    // Centers
+    const bannerCX = bannerRect.left + bannerRect.width  / 2;
+    const bannerCY = bannerRect.top  + bannerRect.height / 2;
+    const pillCX   = pillRect.left   + pillRect.width    / 2;
+    const pillCY   = pillRect.top    + pillRect.height   / 2;
+
+    const dx = pillCX - bannerCX;
+    const dy = pillCY - bannerCY;
+    const scaleX = pillRect.width  / bannerRect.width;
+    const scaleY = pillRect.height / bannerRect.height;
+
+    banner.style.transition = 'transform 0.45s cubic-bezier(0.4,0,0.2,1), opacity 0.35s ease';
+    banner.style.transformOrigin = '50% 50%';
+    banner.style.transform = `translate(${dx}px, ${dy}px) scale(${scaleX}, ${scaleY})`;
+    banner.style.opacity = '0';
+
+    setTimeout(() => banner.remove(), 500);
+  }, 1600);
+}
+
+function updateBidWinnerIndicator(state) {
+  const el = document.getElementById('bid-winner-indicator');
+  const r = state.round;
+  const showPhases = ['kitty', 'playing', 'scoring'];
+  if (showPhases.includes(state.phase) && r?.bidWinner != null && r?.highBid) {
+    const name = nameForSeat(r.bidWinner, state);
+    el.textContent = `Bid: ${name} — ${r.highBid}`;
   } else {
     el.textContent = '';
   }
@@ -610,6 +859,89 @@ function animateTrickToPile(winTeam, state, onDone) {
   }));
 }
 
+// ─── Sweep animation ─────────────────────────────────────────────────────────
+
+function animateSweep(state, onDone) {
+  const sweepTeam = state.sweepTeam;
+  const sweepHands = state.sweepHands; // array of 4 hand arrays, indexed by seat
+  const teamLabel = sweepTeam === 0 ? 'Team A' : 'Team B';
+  const color = sweepTeam === 0 ? '#6fa3e0' : '#e06f6f';
+
+  // Show sweep banner
+  const banner = document.createElement('div');
+  banner.id = 'sweep-banner';
+  banner.className = 'sweep-banner';
+  banner.innerHTML = `<div class="sweep-title" style="color:${color}">${teamLabel} Sweeps!</div>`;
+  document.body.appendChild(banner);
+  requestAnimationFrame(() => requestAnimationFrame(() => banner.classList.add('show')));
+
+  // Determine the destination pile element
+  const pileEl = document.getElementById(sweepTeam === 0 ? 'trick-pile-a' : 'trick-pile-b');
+
+  // For each player position render their remaining cards face-up in a temp container,
+  // then fly each card to the pile
+  const zoneIds = { self: 'my-hand', across: 'across-hand', left: 'left-hand', right: 'right-hand' };
+
+  // Build fly cards after a short delay so the banner is visible first
+  setTimeout(() => {
+    const flyCards = [];
+
+    for (let seat = 0; seat < 4; seat++) {
+      const hand = sweepHands[seat];
+      if (!hand || hand.length === 0) continue;
+
+      const pos = relativePosition(seat);
+      const anchorEl = document.getElementById(zoneIds[pos]);
+      if (!anchorEl) continue;
+      const anchorRect = anchorEl.getBoundingClientRect();
+
+      hand.forEach((card, i) => {
+        const cardEl = buildCard(card);
+        // Position the fly card at the player's hand zone, offset slightly per card
+        const fly = document.createElement('div');
+        fly.className = `trick-fly-card ${cardEl.className}`;
+        const w = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-w')) || 52;
+        const h = parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--card-h')) || 74;
+        fly.style.cssText = `width:${w}px;height:${h}px;left:${anchorRect.left + i * 4}px;top:${anchorRect.top + i * 4}px`;
+        fly.innerHTML = cardEl.innerHTML;
+        document.body.appendChild(fly);
+        flyCards.push(fly);
+      });
+    }
+
+    // Fly all cards to pile after a brief moment
+    const pileRect = pileEl.getBoundingClientRect();
+    const fw = parseFloat(flyCards[0]?.style.width || 40);
+    const fh = parseFloat(flyCards[0]?.style.height || 56);
+    const targetX = pileRect.left + pileRect.width  / 2 - fw / 2;
+    const targetY = pileRect.top  + pileRect.height / 2 - fh / 2;
+
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      flyCards.forEach((fly, i) => {
+        fly.classList.add('flying');
+        fly.style.left = `${targetX}px`;
+        fly.style.top  = `${targetY}px`;
+        fly.style.transitionDelay = `${i * 30}ms`;
+      });
+
+      setTimeout(() => {
+        flyCards.forEach(f => f.remove());
+        banner.classList.remove('show');
+        banner.classList.add('hide');
+        setTimeout(() => {
+          banner.remove();
+          // Update pile badge with final trick count
+          const suffix = sweepTeam === 0 ? 'a' : 'b';
+          document.getElementById(`trick-pile-badge-${suffix}`).textContent =
+            (state.trickCounts ?? state.round?.trickCounts)?.[sweepTeam] ?? 0;
+          document.getElementById(`trick-pile-${suffix}`).classList.remove('empty');
+          onDone();
+        }, 400);
+      }, 500 + flyCards.length * 30);
+    }));
+  }, 800);
+}
+
 // ─── Kitty card display ───────────────────────────────────────────────────────
 
 function renderKittyCard(state) {
@@ -701,6 +1033,7 @@ function renderMyHand(state) {
     if (isPlayPhase) {
       el.addEventListener('click', () => {
         if (selectedCard === card.id) {
+          lastAttemptedCard = card.id;
           socket.emit('playCard', { cardId: card.id });
           selectedCard = null;
         } else {
@@ -805,6 +1138,8 @@ function renderActionPanel(state) {
       waitingEl.textContent = `Waiting for ${nameForSeat(r.currentBidder, state)} to bid…`;
     }
 
+    updateUndoButton(state);
+
   } else if (state.phase === 'redeal-vote') {
     panel.classList.add('panel-kitty');
     statusMsg.style.display = 'flex';
@@ -906,7 +1241,23 @@ function handleScoring(state) {
     return `<span style="color:${color}">Team ${TL[team]}: ${sign}${delta}${setback}</span>`;
   }
 
+  const nameOf = seat => state.playerNames?.find(p => p.seat === seat)?.name ?? `Seat ${seat + 1}`;
+  const teamNames = [
+    [nameOf(0), nameOf(2)].join(' & '),
+    [nameOf(1), nameOf(3)].join(' & '),
+  ];
+
   const body = `
+    <div style="display:flex;gap:0.5rem;margin-bottom:0.6rem;font-family:'DM Sans',sans-serif;font-size:0.82rem">
+      <div style="flex:1;text-align:center;padding:4px 8px;border-radius:4px;background:rgba(111,163,224,0.12);border:1px solid rgba(111,163,224,0.3)">
+        <span style="color:#6fa3e0;font-weight:700;display:block;font-size:0.7rem;letter-spacing:0.06em;text-transform:uppercase">Team A</span>
+        <span style="color:var(--cream);opacity:0.9">${teamNames[0]}</span>
+      </div>
+      <div style="flex:1;text-align:center;padding:4px 8px;border-radius:4px;background:rgba(224,111,111,0.12);border:1px solid rgba(224,111,111,0.3)">
+        <span style="color:#e06f6f;font-weight:700;display:block;font-size:0.7rem;letter-spacing:0.06em;text-transform:uppercase">Team B</span>
+        <span style="color:var(--cream);opacity:0.9">${teamNames[1]}</span>
+      </div>
+    </div>
     <table style="width:100%;border-collapse:collapse;font-family:'DM Mono',monospace;font-size:0.8rem;text-align:left">
       <tr><td style="padding:3px 8px;opacity:.55;white-space:nowrap">Bid</td>
           <td>Team ${TL[bidTeam]} — ${r.highBid} ${bidWon ? '✓' : '✗'}</td></tr>
@@ -947,6 +1298,8 @@ socket.on('gameReset', () => {
   prevTrickCards = []; trickAnimating = false; pendingFly = null;
   overlayShownForPhase = null; myRedealVoteCast = false;
   undoPending = false;
+  undoBidPending = false;
+  fixedSuitOrder = null;
   removeUndoBanner();
   removeTricksBonusBanner();
 
@@ -964,12 +1317,14 @@ socket.on('gameReset', () => {
   nameInput.value = '';
   nameInput.disabled = false;
   nameInput.placeholder = 'Your name';
-  joinBtn.disabled = false;
+  mySeat = null;
+  updateReadyBtn(false);
 
   for (let i = 0; i < 4; i++) {
     const el = document.getElementById(`seat-${i}`);
-    el.querySelector('.seat-name').textContent = '—';
-    el.classList.remove('filled', 'disconnected');
+    el.querySelector('.seat-name').textContent = '';
+    el.classList.remove('filled', 'disconnected', 'ready');
+    el.classList.add('available');
   }
 
   hideOverlay();
@@ -1023,6 +1378,17 @@ document.getElementById('redeal-btn').addEventListener('click', () => {
 function updateUndoButton(state) {
   const row = document.getElementById('undo-row');
   const btn = document.getElementById('undo-btn');
+
+  if (state?.phase === 'bidding') {
+    const r = state.round;
+    const lastEntry = r?.bidLog?.[r.bidLog.length - 1];
+    const iLastBidder = lastEntry?.seat === mySeat && lastEntry?.amount !== 'pass';
+    const canUndo = !undoBidPending && iLastBidder;
+    row.style.display = canUndo ? '' : 'none';
+    btn.disabled = undoBidPending;
+    return;
+  }
+
   if (!state || state.phase !== 'playing') {
     row.style.display = 'none';
     return;
@@ -1070,9 +1436,15 @@ document.getElementById('reset-btn').addEventListener('click', () => {
 document.getElementById('undo-btn').addEventListener('click', () => {
   document.getElementById('settings-panel').classList.add('hidden');
   document.getElementById('settings-btn').classList.remove('open');
-  undoPending = true;
-  updateUndoButton(gameState);
-  socket.emit('requestUndo');
+  if (gameState?.phase === 'bidding') {
+    undoBidPending = true;
+    updateUndoButton(gameState);
+    socket.emit('requestUndoBid');
+  } else {
+    undoPending = true;
+    updateUndoButton(gameState);
+    socket.emit('requestUndo');
+  }
 });
 
 // ─── Undo socket events ───────────────────────────────────────────────────────
@@ -1126,6 +1498,51 @@ function removeUndoBanner() {
   document.getElementById('undo-request-banner')?.remove();
 }
 
+// ─── Bid undo socket events ───────────────────────────────────────────────────
+
+socket.on('undoBidPending', ({ message }) => {
+  toast(message);
+});
+
+socket.on('undoBidDenied', ({ denierName }) => {
+  undoBidPending = false;
+  updateUndoButton(gameState);
+  toast(`⚠ ${denierName} denied the undo request`);
+});
+
+socket.on('undoBidCancelled', () => {
+  removeUndoBanner();
+});
+
+socket.on('undoBidRequest', ({ requesterName, bidAmount, requestingSeat }) => {
+  showUndoBidBanner(requesterName, bidAmount, requestingSeat);
+});
+
+function showUndoBidBanner(requesterName, bidAmount, requestingSeat) {
+  removeUndoBanner();
+  const banner = document.createElement('div');
+  banner.className = 'undo-request-banner';
+  banner.id = 'undo-request-banner';
+
+  banner.innerHTML = `
+    <p><strong>${requesterName}</strong> wants to undo their bid of <strong>${bidAmount}</strong>.</p>
+    <div class="undo-banner-btns">
+      <button class="btn-primary" id="undo-approve-btn">Approve</button>
+      <button class="btn-ghost" id="undo-deny-btn">Deny</button>
+    </div>
+  `;
+  document.body.appendChild(banner);
+
+  document.getElementById('undo-approve-btn').addEventListener('click', () => {
+    socket.emit('respondUndoBid', { approve: true });
+    removeUndoBanner();
+    toast('Undo approved — waiting for other opponent…');
+  });
+  document.getElementById('undo-deny-btn').addEventListener('click', () => {
+    socket.emit('respondUndoBid', { approve: false });
+    removeUndoBanner();
+  });
+}
 
 // ─── Sort controls ────────────────────────────────────────────────────────────
 
@@ -1136,10 +1553,10 @@ document.getElementById('sort-num-desc').addEventListener('click', () => {
   sortNumDir = 'desc'; if (gameState) renderMyHand(gameState);
 });
 document.getElementById('sort-suit-asc').addEventListener('click', () => {
-  sortSuitDir = 'asc'; if (gameState) renderMyHand(gameState);
+  sortSuitDir = 'asc'; fixedSuitOrder = null; if (gameState) renderMyHand(gameState);
 });
 document.getElementById('sort-suit-desc').addEventListener('click', () => {
-  sortSuitDir = 'desc'; if (gameState) renderMyHand(gameState);
+  sortSuitDir = 'desc'; fixedSuitOrder = null; if (gameState) renderMyHand(gameState);
 });
 
 // ─── Overlay ──────────────────────────────────────────────────────────────────
@@ -1171,3 +1588,295 @@ function toast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
+
+// ─── Chat & Emoji ─────────────────────────────────────────────────────────────
+
+const EMOJI_LIST = ['😂','❤️','👍','🔥','😭','🤦','😤','🎉','👀','💀'];
+
+// Populate all emoji grids
+['lobby-emoji-grid','game-emoji-grid'].forEach(id => {
+  const grid = document.getElementById(id);
+  const isGame = id.startsWith('game');
+  EMOJI_LIST.forEach(emoji => {
+    const btn = document.createElement('button');
+    btn.className = 'emoji-btn';
+    btn.textContent = emoji;
+    btn.addEventListener('click', () => {
+      socket.emit('sendEmoji', { emoji });
+      // Panel stays open after sending in both lobby and game
+    });
+    grid.appendChild(btn);
+  });
+});
+
+// ─── Chat overlay ────────────────────────────────────────────────────────────
+const chatOverlay = document.getElementById('chat-overlay');
+
+function openChatOverlay(triggerBtnId) {
+  closeAllCePanels();
+  chatOverlay.classList.remove('hidden');
+  // Mark the triggering button active for unread cleanup
+  if (triggerBtnId) document.getElementById(triggerBtnId)?.classList.add('active');
+  ['lobby-chat-btn','game-chat-btn'].forEach(id => document.getElementById(id)?.classList.remove('has-unread'));
+  const msgs = document.getElementById('overlay-chat-messages');
+  if (msgs) msgs.scrollTop = msgs.scrollHeight;
+  setTimeout(() => document.getElementById('overlay-chat-input')?.focus(), 50);
+}
+
+function closeChatOverlay() {
+  chatOverlay.classList.add('hidden');
+  ['lobby-chat-btn','game-chat-btn'].forEach(id => document.getElementById(id)?.classList.remove('active'));
+}
+
+// Close on backdrop click (not on card click)
+chatOverlay.addEventListener('click', e => {
+  if (e.target === chatOverlay) closeChatOverlay();
+});
+document.getElementById('chat-overlay-close').addEventListener('click', closeChatOverlay);
+
+// Close on Escape
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape' && !chatOverlay.classList.contains('hidden')) closeChatOverlay();
+});
+
+function closeAllCePanels() {
+  ['lobby-emoji-panel','game-emoji-panel']
+    .forEach(id => document.getElementById(id)?.classList.add('hidden'));
+  ['lobby-chat-btn','lobby-emoji-btn','game-chat-btn','game-emoji-btn']
+    .forEach(id => document.getElementById(id)?.classList.remove('active'));
+}
+
+function toggleCePanel(panelId, btnId) {
+  const panel = document.getElementById(panelId);
+  const btn   = document.getElementById(btnId);
+  const wasHidden = panel.classList.contains('hidden');
+  closeAllCePanels();
+  if (wasHidden) {
+    panel.classList.remove('hidden');
+    btn.classList.add('active');
+  }
+}
+
+// Lobby toggles — chat opens overlay, emoji stays inline
+document.getElementById('lobby-chat-btn').addEventListener('click', () => {
+  if (chatOverlay.classList.contains('hidden')) {
+    openChatOverlay('lobby-chat-btn');
+  } else {
+    closeChatOverlay();
+  }
+});
+document.getElementById('lobby-emoji-btn').addEventListener('click', () => {
+  const panel = document.getElementById('lobby-emoji-panel');
+  const btn   = document.getElementById('lobby-emoji-btn');
+  const wasHidden = panel.classList.contains('hidden');
+  closeAllCePanels();
+  if (wasHidden) {
+    // Position overlay just above the button
+    const rect = btn.getBoundingClientRect();
+    panel.style.bottom = (window.innerHeight - rect.top + 8) + 'px';
+    panel.classList.remove('hidden');
+    btn.classList.add('active');
+  }
+});
+
+// Close emoji panels when clicking outside them — capture phase so nothing else fires
+document.addEventListener('click', e => {
+  for (const [panelId, btnId] of [
+    ['lobby-emoji-panel', 'lobby-emoji-btn'],
+    ['game-emoji-panel',  'game-emoji-btn'],
+  ]) {
+    const panel = document.getElementById(panelId);
+    const btn   = document.getElementById(btnId);
+    if (!panel.classList.contains('hidden') &&
+        !panel.contains(e.target) &&
+        e.target !== btn && !btn.contains(e.target)) {
+      panel.classList.add('hidden');
+      btn.classList.remove('active');
+      e.stopPropagation();
+    }
+  }
+}, true);
+
+// Game toggles — chat opens overlay, emoji stays inline
+document.getElementById('game-chat-btn').addEventListener('click', () => {
+  if (chatOverlay.classList.contains('hidden')) {
+    openChatOverlay('game-chat-btn');
+  } else {
+    closeChatOverlay();
+  }
+});
+document.getElementById('game-emoji-btn').addEventListener('click', () => toggleCePanel('game-emoji-panel','game-emoji-btn'));
+
+// Send chat — overlay input
+function sendChat() {
+  const input = document.getElementById('overlay-chat-input');
+  const text = input.value.trim();
+  if (!text) return;
+  if (!myName || mySeat === null) { toast('Join a seat first to chat'); return; }
+  socket.emit('chatMessage', { text });
+  input.value = '';
+}
+
+document.getElementById('overlay-chat-send').addEventListener('click', sendChat);
+document.getElementById('overlay-chat-input').addEventListener('keydown', e => { if (e.key === 'Enter') sendChat(); });
+
+// ─── Chat bubble helper ───────────────────────────────────────────────────────
+function showChatBubble(anchorEl, text) {
+  // Boundary = the seat element itself (or its closest .seat ancestor in game, the player-info)
+  const seatEl = anchorEl.closest('.seat') || anchorEl.closest('.player-info') || anchorEl;
+  const boundary = seatEl.getBoundingClientRect();
+  const bubbleW = boundary.width;
+  const bubbleLeft = boundary.left;
+
+  // Assign stable ID to anchor for finding its existing bubbles
+  if (!anchorEl.dataset.bubbleId) anchorEl.dataset.bubbleId = Math.random().toString(36).slice(2);
+
+  // Measure height with a hidden probe that matches the final width
+  const probe = document.createElement('div');
+  probe.className = 'chat-bubble';
+  probe.textContent = text;
+  probe.style.visibility = 'hidden';
+  probe.style.maxWidth = bubbleW + 'px';
+  probe.style.left = '-9999px';
+  probe.style.top = '0';
+  document.body.appendChild(probe);
+  const probeH = probe.offsetHeight;
+  const probeW = probe.offsetWidth;
+  probe.remove();
+
+  // Push existing bubbles upward
+  document.querySelectorAll('.chat-bubble[data-anchor-id="' + anchorEl.dataset.bubbleId + '"]').forEach(b => {
+    const cur = parseFloat(b.dataset.bubbleTop || '0');
+    const next = cur - probeH - 6;
+    b.style.top = next + 'px';
+    b.dataset.bubbleTop = String(next);
+  });
+
+  const anchorRect = anchorEl.getBoundingClientRect();
+  const topPx = anchorRect.top - probeH - 8;
+
+  const bubble = document.createElement('div');
+  bubble.className = 'chat-bubble';
+  bubble.textContent = text;
+  bubble.dataset.anchorId = anchorEl.dataset.bubbleId;
+  bubble.dataset.bubbleTop = String(topPx);
+  // Center within the seat: seat center minus half the bubble's actual width
+  const seatCenterX = bubbleLeft + bubbleW / 2;
+  const leftPx = seatCenterX - probeW / 2;
+  bubble.style.maxWidth = bubbleW + 'px';
+  bubble.style.left = leftPx + 'px';
+  bubble.style.top = topPx + 'px';
+
+  document.body.appendChild(bubble);
+  setTimeout(() => bubble.remove(), 4100);
+}
+
+// Find the anchor element for a given sender's seat number
+function bubbleAnchorForSeat(senderSeat) {
+  if (!gameScreen.classList.contains('active')) {
+    // In lobby: use the seat div
+    return document.getElementById(`seat-${senderSeat}`);
+  }
+  if (mySeat === null) return null;
+  const pos = relativePosition(senderSeat); // 'self','left','across','right'
+  const zoneId = { self: 'self-name', left: 'left-name', across: 'across-name', right: 'right-name' }[pos];
+  const nameEl = document.getElementById(zoneId);
+  // Return the player-info parent so bubble positions above the name
+  return nameEl?.closest('.player-info') ?? nameEl;
+}
+
+// Receive chat — append to overlay panel, show bubble on sender
+socket.on('chatMessage', ({ name, text, seat }) => {
+  const teamClass = seat % 2 === 0 ? 'team-a' : 'team-b';
+  const container = document.getElementById('overlay-chat-messages');
+  const msg = document.createElement('div');
+  msg.className = 'chat-msg';
+  const nameEl = document.createElement('span');
+  nameEl.className = `chat-msg-name ${teamClass}`;
+  nameEl.textContent = name + ':';
+  const textEl = document.createElement('span');
+  textEl.className = 'chat-msg-text';
+  textEl.textContent = text;
+  msg.appendChild(nameEl);
+  msg.appendChild(textEl);
+  container.appendChild(msg);
+  container.scrollTop = container.scrollHeight;
+
+  // Show unread dot on chat buttons if overlay is closed
+  if (chatOverlay.classList.contains('hidden')) {
+    ['lobby-chat-btn','game-chat-btn'].forEach(id => {
+      const btn = document.getElementById(id);
+      if (btn) btn.classList.add('has-unread');
+    });
+  }
+
+  // In-game: show message in the floating feed (only if chat overlay is closed)
+  if (gameScreen.classList.contains('active') && chatOverlay.classList.contains('hidden')) {
+    const feed = document.getElementById('game-msg-feed');
+    const item = document.createElement('div');
+    item.className = 'game-msg-item';
+    const nameSpan = document.createElement('span');
+    nameSpan.className = `chat-msg-name ${teamClass}`;
+    nameSpan.textContent = name + ':';
+    const textSpan = document.createElement('span');
+    textSpan.textContent = ' ' + text;
+    item.appendChild(nameSpan);
+    item.appendChild(textSpan);
+    feed.appendChild(item);
+    // Remove after fade completes
+    setTimeout(() => item.remove(), 4500);
+  }
+});
+
+// Receive emoji — smooth balloon-float via requestAnimationFrame
+socket.on('floatEmoji', ({ emoji }) => {
+  const el = document.createElement('div');
+  el.className = 'floating-emoji';
+  el.textContent = emoji;
+  document.body.appendChild(el);
+
+  // Starting position: random x across 10–82% vw, near bottom
+  const startXvw = 10 + Math.random() * 72;
+  const startYpx = window.innerHeight * 0.12; // 12vh from bottom = near bottom of screen
+  const totalRise = window.innerHeight * 1.05; // float past top of screen
+
+  // Sine wave parameters for side drift
+  const amp    = 28 + Math.random() * 32;   // px left/right amplitude
+  const period = 2.2 + Math.random() * 1.4; // seconds per full side-to-side cycle
+  const phase  = Math.random() * Math.PI * 2; // random start phase
+
+  const duration = 3200 + Math.random() * 1000; // 3.2–4.2s total
+  let startTime = null;
+
+  function frame(ts) {
+    if (!startTime) startTime = ts;
+    const elapsed = ts - startTime;
+    const t = Math.min(elapsed / duration, 1); // 0→1
+
+    // Vertical: rise linearly (ease-in-out via smoothstep feels natural)
+    const ease = t < 0.5 ? 2 * t * t : -1 + (4 - 2 * t) * t;
+    const y = startYpx + ease * totalRise;
+
+    // Horizontal: continuous sine wave
+    const secs = elapsed / 1000;
+    const x = (startXvw / 100) * window.innerWidth + Math.sin(phase + (secs / period) * Math.PI * 2) * amp;
+
+    // Opacity: fade in over first 8%, fade out over last 18%
+    let opacity = 1;
+    if (t < 0.08) opacity = t / 0.08;
+    else if (t > 0.82) opacity = (1 - t) / 0.18;
+
+    el.style.transform = `translate(${x}px, ${-y}px)`;
+    el.style.opacity = opacity;
+    el.style.left = '0';
+    el.style.bottom = '0';
+
+    if (t < 1) {
+      requestAnimationFrame(frame);
+    } else {
+      el.remove();
+    }
+  }
+
+  requestAnimationFrame(frame);
+});
